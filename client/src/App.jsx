@@ -34,41 +34,47 @@ const PEER_CONFIG = {
   }
 }
 
-function IconUser({ fill = '#86868b' }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
-      <circle cx="12" cy="7" r="4" fill={fill} />
-      <path d="M4 21v-1a6 6 0 0 1 12 0v1" fill={fill} />
-    </svg>
-  )
-}
 function IconArrow() {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-      <path d="M12 5v14M5 12l7-7 7 7" stroke="#0a84ff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
-  )
-}
-function IconSend() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-      <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" fill="#fff" stroke="none"/>
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 5v14M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   )
 }
 function IconDownload() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
     </svg>
   )
 }
 function IconCloud() {
   return (
-    <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
-      <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" stroke="#0a84ff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
     </svg>
   )
+}
+function IconCheck() {
+  return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4.5 4.5L19 7" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+}
+function IconMoon() {
+  return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.4 15.1A8.6 8.6 0 0 1 8.9 3.6 8.6 8.6 0 1 0 20.4 15.1Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg>
+}
+function IconSun() {
+  return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.5" stroke="currentColor" strokeWidth="1.8" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+}
+function Logo() {
+  return <picture className="logo"><source media="(prefers-color-scheme: dark)" srcSet="/logo-light.png" /><img src="/logo-dark.png" alt="Kirimin" /></picture>
+}
+function ThemeToggle({ dark, onClick }) {
+  return <button className="theme-toggle" onClick={onClick} aria-label={dark ? 'Gunakan tema terang' : 'Gunakan tema gelap'} title={dark ? 'Gunakan tema terang' : 'Gunakan tema gelap'}>{dark ? <IconSun /> : <IconMoon />}</button>
+}
+function initials(value) {
+  return value.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase()
+}
+function formatTime(time) {
+  return new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit' }).format(time)
 }
 
 export default function App() {
@@ -446,14 +452,18 @@ export default function App() {
   const onDragOver = useCallback((e) => e.preventDefault(), [])
 
   if (!joined) return <main className={`login ${dark ? 'dark' : ''}`}>
-    <div className="brand-wrap"><span className="brand">kirim<span>in</span></span><span className="tag">Berbagi Berkas Langsung</span></div>
-    <h1>Kirim berkas seketika</h1>
-    <p>Transfer langsung antar-browser (P2P). Tanpa simpan di server.</p>
-    <form onSubmit={join}>
-      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Masukkan nama Anda" maxLength="32" autoComplete="off" />
-      <button type="submit">Mulai Berbagi</button>
-    </form>
-    <button className="theme-toggle" onClick={() => setDark(d => !d)} aria-label="Ganti tema">{dark ? '☀️' : '🌙'}</button>
+    <header className="login-header"><Logo /><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></header>
+    <div className="login-shell">
+      <div className="login-kicker"><span className="kicker-dot" /> Berbagi langsung, lebih sederhana</div>
+      <h1>Kirim berkas<br /><em>tanpa perantara.</em></h1>
+      <p>Transfer file langsung dari browser ke browser. Cepat, aman, tanpa menyimpan file di server.</p>
+      <form onSubmit={join}>
+        <label htmlFor="display-name">Nama Anda</label>
+        <div className="login-form-row"><input id="display-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Masukkan nama Anda" maxLength="32" autoComplete="off" /><button type="submit">Mulai Berbagi <span>→</span></button></div>
+      </form>
+      <div className="trust-row"><span><IconCheck /> P2P langsung</span><span><IconCheck /> Tanpa upload server</span><span><IconCheck /> Gratis digunakan</span></div>
+    </div>
+    <div className="login-orbit orbit-one" /><div className="login-orbit orbit-two" />
   </main>
 
   const sentPercent = sending ? Math.min(100, Math.round((sending.sent / sending.size) * 100)) : 0
@@ -465,104 +475,47 @@ export default function App() {
 
   return <main className={`app ${dark ? 'dark' : ''}`}>
     <header>
-      <div className="brand-wrap">
-        <span className="brand">kirim<span>in</span></span>
-        <span className="pill">P2P</span>
-      </div>
-      <div className="profile">
-        <span className="name-badge">{name}</span>
-        <button className="theme-toggle" onClick={() => setDark(d => !d)} aria-label="Ganti tema">{dark ? '☀️' : '🌙'}</button>
-      </div>
+      <div className="brand-wrap"><Logo /><span className="pill">P2P</span></div>
+      <div className="profile"><span className="connection-status"><span className="dot" /> Terhubung</span><span className="name-badge">{initials(name)} <b>{name}</b></span><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></div>
     </header>
     <section className="layout">
       <aside>
         <div className="sidebar-section">
-          <div className="sidebar-title"><IconUser /> <span>Daring</span><b>{users.length}</b></div>
+          <div className="sidebar-title"><span>Pengguna Online</span><b>{users.length}</b></div>
           {users.length === 0 && <p className="empty-hint">Menunggu pengguna lain bergabung…</p>}
           {users.map((u) => (
             <button key={u.id} className={`user-card ${selected?.id === u.id ? 'active' : ''}`} onClick={() => setSelected(u)}>
-              <span className="dot" />
-              <IconUser />
-              <span>{u.name}</span>
+              <span className="avatar">{initials(u.name)}</span><span className="user-details"><b>{u.name}</b><small><span className="dot" /> Online</small></span>
             </button>
           ))}
         </div>
-        <div className="sidebar-section">
-          <div className="sidebar-title"><IconSend /> <span>Riwayat</span></div>
-          {history.length === 0 && <p className="empty-hint">Belum ada pengiriman</p>}
+        <div className="sidebar-section history-section">
+          <div className="sidebar-title"><span>Riwayat Transfer</span></div>
+          {history.length === 0 && <p className="empty-hint">Belum ada aktivitas transfer</p>}
           {history.map((h, i) => (
-            <div key={i} className={`history-card ${h.type}`}>
-              {h.type === 'sent' ? <IconSend /> : <IconDownload />}
-              <div>
-                <b>{h.name}</b>
-                <small>{formatSize(h.size)}</small>
-              </div>
-            </div>
+            <div key={i} className={`history-card ${h.type}`}><span className="history-icon">{h.type === 'sent' ? '↑' : '↓'}</span><div><b>{h.name}</b><small>{h.type === 'sent' ? `Ke ${h.peer}` : `Dari ${h.peer}`} · {formatSize(h.size)} · {formatTime(h.time)}</small></div></div>
           ))}
         </div>
       </aside>
       <article>
-        <div className="eyebrow">LANGKAH 1</div>
-        <h1>{selected ? 'Kirim ke' : <><IconCloud /> Pilih penerima</>} <strong>{selected && selected.name}</strong></h1>
-        <p className="sub">{selected ? 'Pilih berkas yang ingin dikirim' : 'Pilih pengguna di kiri untuk mulai berbagi'}</p>
+        <div className="eyebrow">TRANSFER AMAN P2P</div>
+        <h1>{selected ? <>Kirim ke <strong>{selected.name}</strong></> : <><span className="hero-icon"><IconCloud /></span>Pilih penerima</>}</h1>
+        <p className="sub">{selected ? 'Pilih satu atau beberapa berkas dari perangkat Anda.' : 'Pilih pengguna online untuk memulai transfer berkas langsung.'}</p>
         <label className={`dropzone ${!selected ? 'disabled' : ''}`} onDrop={onDrop} onDragOver={onDragOver}>
           <input type="file" multiple disabled={!selected} onChange={(e) => handleFiles(e.target.files)} />
-          <div className="drop-content">
-            <IconArrow />
-            <b>{selected ? 'Klik atau tarik berkas di sini' : 'Pilih pengguna dulu'}</b>
-            <small>Mendukung banyak berkas · Ukuran bebas</small>
-          </div>
+          <div className="drop-icon"><IconArrow /></div><div className="drop-content"><b>{selected ? 'Tarik berkas ke sini' : 'Pilih penerima terlebih dahulu'}</b><span>{selected ? 'atau pilih berkas dari perangkat' : 'Daftar pengguna online ada di samping'}</span><small>Transfer langsung antar perangkat · Ukuran bebas</small></div>
         </label>
-        {error && <div className="error-banner">{error} <button onClick={() => setError(null)}>×</button></div>}
+        {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError(null)} aria-label="Tutup pesan kesalahan">×</button></div>}
         {(sending || receiving) && (
           <div className="progress-card">
-            <div className="progress-head">
-              <div className="progress-label">
-                <span className={`dot ${sending?.connected || receiving?.connected ? 'ok' : 'pulse'}`} />
-                <b>{sending ? `Mengirim ke ${selected?.name}` : `Menerima dari ${receiving?.fromName}`}</b>
-              </div>
-              <span>{sending ? sentPercent : recvPercent}%</span>
-            </div>
+            <div className="progress-head"><div className="progress-label"><span className={`dot ${sending?.connected || receiving?.connected ? 'ok' : 'pulse'}`} /><div><span>{sending ? (sending.connected ? 'Mengirim berkas' : 'Menyiapkan koneksi') : (receiving?.connected ? 'Menerima berkas' : 'Menunggu koneksi')}</span><b>{sending?.name || receiving?.name || 'Menyiapkan transfer'}</b></div></div><strong>{sending ? sentPercent : recvPercent}%</strong></div>
             <div className="track"><div style={{ width: `${sending ? sentPercent : recvPercent}%` }} /></div>
-            <div className="progress-meta">
-              <span>{sending ? formatSize(sending.sent) : formatSize(receiving.received)} / {sending ? formatSize(sending.size) : formatSize(receiving.size)}</span>
-              <span>{sending ? sendSpeed : recvSpeed}</span>
-              {sendETA && <span className="eta">≈{sendETA}</span>}
-              {recvETA && <span className="eta">≈{recvETA}</span>}
-              <span className={`conn ${sending?.connected || receiving?.connected ? 'ok' : 'pulse'}`}>{sending?.connected || receiving?.connected ? 'Terhubung' : 'Menghubungkan…'}</span>
-            </div>
+            <div className="progress-meta"><span>{sending ? formatSize(sending.sent) : formatSize(receiving.received)} dari {sending ? formatSize(sending.size) : formatSize(receiving.size)}</span><span>{sending ? sendSpeed : recvSpeed}</span>{sendETA && <span className="eta">Sisa {sendETA}</span>}{recvETA && <span className="eta">Sisa {recvETA}</span>}<span className={`conn ${sending?.connected || receiving?.connected ? 'ok' : 'pulse'}`}>{sending?.connected || receiving?.connected ? 'Terhubung langsung' : 'Menghubungkan…'}</span></div>
           </div>
         )}
       </article>
     </section>
-    {notify && <div className={`toast ${notify.type}`} onClick={() => setNotify(null)}>{notify.message}</div>}
-    {receivedFiles.length > 0 && (
-      <div className="download-panel">
-        <div className="download-panel-header">
-          <span>Berkas diterima ({receivedFiles.length})</span>
-          <button onClick={() => {
-            receivedFiles.forEach(f => URL.revokeObjectURL(f.url))
-            setReceivedFiles([])
-          }} aria-label="Tutup daftar">×</button>
-        </div>
-        {receivedFiles.map((file, idx) => (
-          <div key={idx} className="download-item">
-            <div className="download-info">
-              <b>{file.name}</b>
-              <small>{formatSize(file.size)}</small>
-            </div>
-            <a
-              href={file.url}
-              download={file.name}
-              className="download-btn"
-              onClick={() => {
-                console.log('[download] clicked:', file.name)
-                // Hapus satu file setelah diunduh (opsional) atau biarkan di list
-              }}
-            >Download</a>
-          </div>
-        ))}
-      </div>
-    )}
+    {notify && <div className={`toast ${notify.type}`} onClick={() => setNotify(null)}><span><IconCheck /></span>{notify.message}</div>}
+    {receivedFiles.length > 0 && <div className="download-panel"><div className="download-panel-header"><div><span className="received-check"><IconCheck /></span><div><b>Berkas berhasil diterima</b><small>{receivedFiles.length} berkas siap diunduh</small></div></div><button onClick={() => { receivedFiles.forEach(f => URL.revokeObjectURL(f.url)); setReceivedFiles([]) }} aria-label="Tutup daftar">×</button></div>{receivedFiles.map((file, idx) => <div key={idx} className="download-item"><div className="download-info"><b>{file.name}</b><small>{formatSize(file.size)}</small></div><a href={file.url} download={file.name} className="download-btn">Download <IconDownload /></a></div>)}</div>}
   </main>
 }
