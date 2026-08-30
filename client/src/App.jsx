@@ -102,6 +102,9 @@ export default function App() {
   const usersRef = useRef([])
   const socketRef = useRef(null)
   const wsRef = useRef(null)
+  const fileQueueRef = useRef([])
+  const isSendingRef = useRef(false)
+  const urlCacheRef = useRef([])
   const audioRef = useRef(new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAA='))
   const [showProfile, setShowProfile] = useState(false)
   const [showRename, setShowRename] = useState(false)
@@ -304,6 +307,7 @@ export default function App() {
 
       const url = URL.createObjectURL(blob)
       console.log('[file] download ready:', state.name, 'url:', url)
+      urlCacheRef.current.push(url)
       setReceivedFiles(prev => [...prev, { name: state.name, size: state.size, url, time: Date.now() }])
       setNotify({ type: 'success', message: `Berkas "${state.name}" diterima utuh tanpa kompresi` })
       setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
@@ -335,9 +339,9 @@ export default function App() {
 
   useEffect(() => {
     return () => {
-      receivedFiles.forEach(f => URL.revokeObjectURL(f.url))
+      urlCacheRef.current.forEach(url => URL.revokeObjectURL(url))
     }
-  }, [receivedFiles])
+  }, [])
 
   const join = (e) => {
     e.preventDefault()
@@ -346,8 +350,11 @@ export default function App() {
     setJoined(true)
   }
 
-  const sendFile = useCallback(async (file) => {
-    if (!file || !selected) return
+  const sendFile = useCallback((file, recipient) => new Promise((resolve) => {
+    if (!file || !recipient) {
+      resolve()
+      return
+    }
 
     if (peerRef.current) {
       peerRef.current.destroy()
@@ -364,14 +371,27 @@ export default function App() {
     setSending(transfer)
     setError(null)
 
+    let connectTimeout
+    let settled = false
+    const finish = (success) => {
+      if (settled) return
+      settled = true
+      clearTimeout(connectTimeout)
+      if (peerRef.current === peer) {
+        peer.destroy()
+        peerRef.current = null
+      }
+      setSending(null)
+      resolve(success)
+    }
+
     peer.on('signal', (signal) => {
       console.log('[peer] offering, type:', signal?.type)
       if (socketRef.current?.readyState === WebSocket.OPEN) {
-        socketRef.current.send(JSON.stringify({ type: signal.type || 'ice-candidate', target: selected.id, data: signal }))
+        socketRef.current.send(JSON.stringify({ type: signal.type || 'ice-candidate', target: recipient.id, data: signal }))
       }
     })
 
-    let connectTimeout
     peer.on('connect', async () => {
       console.log('[peer] connected, waiting for channel ready...')
       clearTimeout(connectTimeout)
@@ -380,14 +400,7 @@ export default function App() {
       try {
         const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
         const checksum = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
-
-        const meta = JSON.stringify({ 
-          type: 'file-meta', 
-          name: file.name, 
-          size: file.size, 
-          mime: file.type, 
-          checksum 
-        })
+        const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum })
         console.log('[file] sending meta:', { name: file.name, size: file.size, mime: file.type })
         peer.send(meta)
 
@@ -400,7 +413,10 @@ export default function App() {
         const startTime = Date.now()
 
         const send = async () => {
-          if (!peer.connected) return
+          if (!peer.connected) {
+            finish(false)
+            return
+          }
 
           const bufferedAmount = peer.bufferSize
           if (bufferedAmount > maxBufferedAmount) {
@@ -410,15 +426,16 @@ export default function App() {
 
           const chunk = file.slice(offset, offset + chunkSize)
           const buffer = await chunk.arrayBuffer()
-          if (!peer.connected) return
+          if (!peer.connected) {
+            finish(false)
+            return
+          }
 
           peer.send(buffer)
           offset += buffer.byteLength
           chunkCount += 1
 
-          if (chunkCount % 50 === 0 || offset === file.size) {
-            console.log('[file] sent:', offset, '/', file.size)
-          }
+          if (chunkCount % 50 === 0 || offset === file.size) console.log('[file] sent:', offset, '/', file.size)
 
           const elapsed = (Date.now() - startTime) / 1000
           const speed = elapsed > 0 ? offset / elapsed : 0
@@ -426,44 +443,38 @@ export default function App() {
 
           if (offset < file.size) {
             setTimeout(send, 0)
-          } else {
-            console.log('[file] sending complete signal')
-            peer.send(JSON.stringify({ type: 'file-end' }))
-            setHistory(h => [{ name: file.name, size: file.size, peer: selected.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
-            setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim ke ${selected.name}` })
-            setTimeout(() => {
-              if (peer) peer.destroy()
-              peerRef.current = null
-              setSending(null)
-            }, 2000)
+            return
           }
+
+          console.log('[file] sending complete signal')
+          peer.send(JSON.stringify({ type: 'file-end' }))
+          setHistory(h => [{ name: file.name, size: file.size, peer: recipient.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
+          setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim ke ${recipient.name}` })
+          setTimeout(() => finish(true), 2000)
         }
         send()
       } catch (err) {
         console.error('[send] error:', err)
         setError('Gagal mengirim berkas.')
-        setSending(null)
+        finish(false)
       }
     })
 
     connectTimeout = setTimeout(() => {
-      if (sending && !sending.connected) {
-        setError('Koneksi timeout. Pastikan penerima online dan refresh halaman.')
-        setSending(null)
-      }
+      setError('Koneksi timeout. Pastikan penerima online dan refresh halaman.')
+      finish(false)
     }, 40000)
 
     peer.on('error', (err) => {
       console.error('[peer] error:', err)
-      clearTimeout(connectTimeout)
       setError('Gagal terhubung. Coba lagi.')
-      if (peerRef.current) {
-        peerRef.current.destroy()
-        peerRef.current = null
-      }
-      setSending(null)
+      finish(false)
     })
-  }, [selected, sending])
+
+    peer.on('close', () => {
+      if (!settled) finish(false)
+    })
+  }), [])
 
   const handleRename = () => {
     const newName = renameValue.trim()
@@ -481,9 +492,23 @@ export default function App() {
     }
   }
 
-  const handleFiles = useCallback((files) => {
-    Array.from(files).forEach(sendFile)
+  const processFileQueue = useCallback(async () => {
+    if (isSendingRef.current) return
+    isSendingRef.current = true
+
+    while (fileQueueRef.current.length > 0) {
+      const item = fileQueueRef.current.shift()
+      await sendFile(item.file, item.recipient)
+    }
+
+    isSendingRef.current = false
   }, [sendFile])
+
+  const handleFiles = useCallback((files) => {
+    if (!selected) return
+    fileQueueRef.current.push(...Array.from(files).map(file => ({ file, recipient: selected })))
+    processFileQueue()
+  }, [processFileQueue, selected])
 
   const onDrop = useCallback((e) => { e.preventDefault(); if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files) }, [handleFiles])
   const onDragOver = useCallback((e) => e.preventDefault(), [])
@@ -583,6 +608,6 @@ export default function App() {
       </article>
     </section>
     {notify && <div className={`toast ${notify.type}`} onClick={() => setNotify(null)}><span><IconCheck /></span>{notify.message}</div>}
-    {receivedFiles.length > 0 && <div className="download-panel"><div className="download-panel-header"><div><span className="received-check"><IconCheck /></span><div><b>Berkas berhasil diterima</b><small>{receivedFiles.length} berkas siap diunduh</small></div></div><button onClick={() => { receivedFiles.forEach(f => URL.revokeObjectURL(f.url)); setReceivedFiles([]) }} aria-label="Tutup daftar">×</button></div>{receivedFiles.map((file, idx) => <div key={idx} className="download-item"><div className="download-info"><b>{file.name}</b><small>{formatSize(file.size)}</small></div><a href={file.url} download={file.name} className="download-btn">Download <IconDownload /></a></div>)}</div>}
+    {receivedFiles.length > 0 && <div className="download-panel"><div className="download-panel-header"><div><span className="received-check"><IconCheck /></span><div><b>Berkas berhasil diterima</b><small>{receivedFiles.length} berkas siap diunduh</small></div></div><button onClick={() => { urlCacheRef.current.forEach(URL.revokeObjectURL); urlCacheRef.current = []; setReceivedFiles([]) }} aria-label="Tutup daftar">×</button></div>{receivedFiles.map((file, idx) => <div key={idx} className="download-item"><div className="download-info"><b>{file.name}</b><small>{formatSize(file.size)}</small></div><a href={file.url} download={file.name} className="download-btn">Download <IconDownload /></a></div>)}</div>}
   </main>
 }
