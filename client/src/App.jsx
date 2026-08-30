@@ -64,8 +64,8 @@ function IconMoon() {
 function IconSun() {
   return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.5" stroke="currentColor" strokeWidth="1.8" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
 }
-function Logo() {
-  return <picture className="logo"><source media="(prefers-color-scheme: dark)" srcSet="/logo-light.png" /><img src="/logo-dark.png" alt="Kirimin" /></picture>
+function Logo({ dark }) {
+  return <img src={dark ? "/logo-dark.png" : "/logo-light.png"} alt="Kirimin" className="brand-logo" />
 }
 function ThemeToggle({ dark, onClick }) {
   return <button className="theme-toggle" onClick={onClick} aria-label={dark ? 'Gunakan tema terang' : 'Gunakan tema gelap'} title={dark ? 'Gunakan tema terang' : 'Gunakan tema gelap'}>{dark ? <IconSun /> : <IconMoon />}</button>
@@ -452,7 +452,7 @@ export default function App() {
   const onDragOver = useCallback((e) => e.preventDefault(), [])
 
   if (!joined) return <main className={`login ${dark ? 'dark' : ''}`}>
-    <header className="login-header"><Logo /><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></header>
+    <header className="login-header"><Logo dark={dark} /><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></header>
     <div className="login-shell">
       <div className="login-kicker"><span className="kicker-dot" /> Berbagi langsung, lebih sederhana</div>
       <h1>Kirim berkas<br /><em>tanpa perantara.</em></h1>
@@ -475,7 +475,7 @@ export default function App() {
 
   return <main className={`app ${dark ? 'dark' : ''}`}>
     <header>
-      <div className="brand-wrap"><Logo /><span className="pill">P2P</span></div>
+      <div className="brand-wrap"><Logo dark={dark} /><span className="pill">P2P</span></div>
       <div className="profile"><span className="connection-status"><span className="dot" /> Terhubung</span><span className="name-badge">{initials(name)} <b>{name}</b></span><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></div>
     </header>
     <section className="layout">
