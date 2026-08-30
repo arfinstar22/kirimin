@@ -86,8 +86,8 @@ function formatTime(time) {
 export default function App() {
   const prefersDark = useMediaQuery('(prefers-color-scheme: dark)')
   const [dark, setDark] = useState(prefersDark)
-  const [name, setName] = useState('')
-  const [joined, setJoined] = useState(false)
+  const [name, setName] = useState(() => localStorage.getItem('kirimin_username') || '')
+  const [joined, setJoined] = useState(() => Boolean(localStorage.getItem('kirimin_username')?.trim()))
   const [users, setUsers] = useState([])
   const [selected, setSelected] = useState(null)
   const [sending, setSending] = useState(null)
@@ -101,7 +101,12 @@ export default function App() {
   const recvStateRef = useRef(null)
   const usersRef = useRef([])
   const socketRef = useRef(null)
+  const wsRef = useRef(null)
   const audioRef = useRef(new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAA='))
+  const [showProfile, setShowProfile] = useState(false)
+  const [showRename, setShowRename] = useState(false)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameError, setRenameError] = useState('')
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -119,6 +124,7 @@ export default function App() {
     const connect = () => {
       const ws = new WebSocket(SIGNALING_URL)
       socketRef.current = ws
+      wsRef.current = ws
 
       ws.onopen = () => {
         console.log('[ws] connected')
@@ -256,6 +262,11 @@ export default function App() {
         } else if (message.type === 'error') {
           console.error('[ws] error:', message.message)
           setError(message.message)
+        } else if (message.type === 'renamed') {
+          console.log('[ws] renamed to:', message.name)
+          setName(message.name)
+          localStorage.setItem('kirimin_username', message.name)
+          setShowRename(false)
         }
       }
 
@@ -316,6 +327,9 @@ export default function App() {
         socketRef.current.onclose = null
         socketRef.current.close()
       }
+      if (wsRef.current) {
+        wsRef.current = null
+      }
     }
   }, [joined])
 
@@ -328,6 +342,7 @@ export default function App() {
   const join = (e) => {
     e.preventDefault()
     if (!name.trim()) return
+    localStorage.setItem('kirimin_username', name.trim())
     setJoined(true)
   }
 
@@ -450,6 +465,22 @@ export default function App() {
     })
   }, [selected, sending])
 
+  const handleRename = () => {
+    const newName = renameValue.trim()
+    if (!newName) {
+      setRenameError('Nama tidak boleh kosong')
+      return
+    }
+    if (newName === name) {
+      setShowRename(false)
+      setRenameValue('')
+      return
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'rename', name: newName }))
+    }
+  }
+
   const handleFiles = useCallback((files) => {
     Array.from(files).forEach(sendFile)
   }, [sendFile])
@@ -482,8 +513,38 @@ export default function App() {
   return <main className={`app ${dark ? 'dark' : ''}`}>
     <header>
       <div className="brand-wrap"><Logo dark={dark} /><span className="pill">P2P</span></div>
-      <div className="profile"><span className="connection-status"><span className="dot" /> Terhubung</span><span className="name-badge">{initials(name)} <b>{name}</b></span><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></div>
+      <div className="profile">
+        <span className="connection-status"><span className="dot" /> Terhubung</span>
+        <div className="profile-container">
+          <button className="profile-trigger" onClick={() => setShowProfile(!showProfile)}>
+            <span className="name-badge">{initials(name)} <b>{name}</b></span>
+          </button>
+          {showProfile && (
+            <div className="profile-dropdown">
+              <div className="dropdown-info"><b>{name}</b><small><span className="dot" /> Online</small></div>
+              <button className="dropdown-item" onClick={() => { setShowRename(true); setRenameValue(name); setShowProfile(false); }}><span>✏️</span> Ganti Nama</button>
+            </div>
+          )}
+        </div>
+        <ThemeToggle dark={dark} onClick={() => setDark(d => !d)} />
+      </div>
     </header>
+    {showRename && (
+      <div className="modal-overlay" onClick={() => setShowRename(false)}>
+        <div className="modal-content" onClick={e => e.stopPropagation()}>
+          <div className="modal-header"><h3>Ganti Nama</h3><button onClick={() => setShowRename(false)}>×</button></div>
+          <div className="modal-body">
+            <p>Nama saat ini: <b>{name}</b></p>
+            <div className="input-group">
+              <label>Nama Baru</label>
+              <input autoFocus value={renameValue} onChange={e => { setRenameValue(e.target.value); setRenameError(''); }} placeholder="Ketik nama baru..." maxLength="30" onKeyDown={e => { if (e.key === 'Enter') handleRename(); if (e.key === 'Escape') setShowRename(false); }} />
+              {renameError && <small className="error-text">{renameError}</small>}
+            </div>
+          </div>
+          <div className="modal-footer"><button className="btn-secondary" onClick={() => setShowRename(false)}>Batal</button><button className="btn-primary" onClick={handleRename}>Simpan Nama</button></div>
+        </div>
+      </div>
+    )}
     <section className="layout">
       <aside>
         <div className="sidebar-section">

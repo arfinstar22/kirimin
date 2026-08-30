@@ -74,6 +74,11 @@ export class SignalingRoom {
       return
     }
 
+    if (message.type === 'rename') {
+      this.rename(user, message.name)
+      return
+    }
+
     if (message.type === 'offer' || message.type === 'answer' || message.type === 'ice-candidate') {
       this.forwardSignal(user, message)
       return
@@ -145,5 +150,22 @@ export class SignalingRoom {
 
   sendError(user, message) {
     this.send(user, { type: 'error', message })
+  }
+
+  rename(user, name) {
+    if (!user.name) {
+      this.sendError(user, 'Register before renaming')
+      return
+    }
+
+    const cleanName = name.trim().replace(/[\u0000-\u001F\u007F]/g, '').slice(0, 30)
+    if (!cleanName) {
+      this.sendError(user, 'Username cannot be empty')
+      return
+    }
+
+    user.name = cleanName
+    this.send(user, { type: 'renamed', name: cleanName })
+    this.broadcastUsers()
   }
 }
