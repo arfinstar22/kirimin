@@ -65,7 +65,13 @@ function IconSun() {
   return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.5" stroke="currentColor" strokeWidth="1.8" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
 }
 function Logo({ dark }) {
-  return <img src={dark ? "/logo-dark.png" : "/logo-light.png"} alt="Kirimin" className="brand-logo" />
+  return (
+    <img
+      src={dark ? "/logo-light.png" : "/logo-dark.png"}
+      alt="Kirimin"
+      className="brand-logo"
+    />
+  )
 }
 function ThemeToggle({ dark, onClick }) {
   return <button className="theme-toggle" onClick={onClick} aria-label={dark ? 'Gunakan tema terang' : 'Gunakan tema gelap'} title={dark ? 'Gunakan tema terang' : 'Gunakan tema gelap'}>{dark ? <IconSun /> : <IconMoon />}</button>
