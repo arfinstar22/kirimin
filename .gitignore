@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Cloudflare Wrangler
+.wrangler/
+**/.wrangler/
+
+# Build output
+dist/
+**/dist/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+.vscode/

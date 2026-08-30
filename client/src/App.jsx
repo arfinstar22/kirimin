@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { io } from 'socket.io-client'
 import Peer from 'simple-peer-light'
 import './index.css'
 
-const socket = io(import.meta.env.VITE_SIGNALING_URL || `${window.location.protocol}//${window.location.hostname}:3002`, {
-  transports: ['websocket', 'polling'],
-  reconnection: true
-})
+const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'wss://kirimin-signaling.darfinstar.workers.dev/ws'
+
 const formatSize = (bytes) => {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -86,9 +83,12 @@ export default function App() {
   const [history, setHistory] = useState([])
   const [notify, setNotify] = useState(null)
   const [error, setError] = useState(null)
+  const [receivedFiles, setReceivedFiles] = useState([])
+  const [socketId, setSocketId] = useState(null)
   const peerRef = useRef(null)
   const recvStateRef = useRef(null)
   const usersRef = useRef([])
+  const socketRef = useRef(null)
   const audioRef = useRef(new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAA='))
 
   useEffect(() => {
@@ -100,143 +100,222 @@ export default function App() {
   }, [users])
 
   useEffect(() => {
-    socket.on('users', (list) => {
-      console.log('Received users:', list)
-      setUsers(list.filter((u) => u.id !== socket.id))
-    })
+    if (!joined) return
+
+    let reconnectTimeout
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const connect = () => {
+      const ws = new WebSocket(SIGNALING_URL)
+      socketRef.current = ws
+
+      ws.onopen = () => {
+        console.log('[ws] connected')
+        ws.send(JSON.stringify({ type: 'register', name }))
+      }
+
+      ws.onmessage = (event) => {
+        let message
+        try {
+          message = JSON.parse(event.data)
+        } catch {
+          return
+        }
+
+        if (message.type === 'registered') {
+          console.log('[ws] registered:', message.id)
+          setSocketId(message.id)
+        } else if (message.type === 'users') {
+          console.log('[ws] users:', message.users.map(u => u.name))
+          const myId = socketId || message.users.find(u => u.name === name)?.id
+          if (myId) setSocketId(myId)
+          setUsers(message.users.filter((u) => u.id !== (myId || socketId)))
+        } else if (message.type === 'offer' || message.type === 'answer' || message.type === 'ice-candidate') {
+          const from = message.from
+          const signal = message.data
+          console.log('[signal] from', from, 'type:', signal?.type)
+          const fromUser = usersRef.current.find(u => u.id === from)?.name || 'Seseorang'
+
+          try {
+            if (!peerRef.current) {
+              const peer = new Peer(PEER_CONFIG)
+              peerRef.current = peer
+
+              peer.on('signal', (answer) => {
+                console.log('[peer] answering')
+                ws.send(JSON.stringify({ type: answer.type, target: from, data: answer }))
+              })
+
+              peer.on('connect', () => {
+                console.log('[peer] connected!')
+                setReceiving(r => r ? { ...r, connected: true } : r)
+                setError(null)
+              })
+
+              peer.on('data', (data) => {
+                chain = chain.then(async () => {
+                  if (typeof data === 'string') {
+                    try {
+                      const msg = JSON.parse(data)
+                      if (msg.type === 'file-meta') {
+                        console.log('[file] meta received:', msg)
+                        const pending = recvStateRef.current?.pendingChunks || []
+                        recvStateRef.current = {
+                          name: msg.name,
+                          size: msg.size,
+                          mime: msg.mime || 'application/octet-stream',
+                          checksum: msg.checksum,
+                          fromName: fromUser,
+                          received: 0,
+                          chunks: [...pending],
+                          startTime: Date.now(),
+                          speed: 0,
+                          connected: true,
+                          complete: false
+                        }
+                        pending.forEach(chunk => {
+                          recvStateRef.current.received += chunk.byteLength
+                        })
+                        setReceiving(recvStateRef.current)
+                        return
+                      }
+                      if (msg.type === 'file-end') {
+                        console.log('[file] end signal received')
+                        if (recvStateRef.current) {
+                          recvStateRef.current.complete = true
+                          await finalizeTransfer()
+                        }
+                        return
+                      }
+                    } catch {
+                      console.warn('[file] non-JSON string received, treating as binary')
+                    }
+                  }
+
+                  if (data instanceof ArrayBuffer || data instanceof Uint8Array || ArrayBuffer.isView(data)) {
+                    const chunk = data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+                    if (recvStateRef.current) {
+                      recvStateRef.current.chunks.push(chunk)
+                      recvStateRef.current.received += chunk.byteLength
+                      
+                      if (recvStateRef.current.chunks.length % 50 === 0) {
+                        console.log('[file] progress:', recvStateRef.current.received, '/', recvStateRef.current.size)
+                      }
+                      
+                      const elapsed = (Date.now() - recvStateRef.current.startTime) / 1000
+                      recvStateRef.current.speed = elapsed > 0 ? recvStateRef.current.received / elapsed : 0
+                      setReceiving({ ...recvStateRef.current })
+
+                      if (recvStateRef.current.received >= recvStateRef.current.size && recvStateRef.current.complete) {
+                        await finalizeTransfer()
+                      }
+                    } else {
+                      console.log('[file] early chunk buffered:', chunk.byteLength)
+                      recvStateRef.current = {
+                        pendingChunks: [chunk],
+                        name: null, size: null, mime: null, checksum: null,
+                        fromName, received: chunk.byteLength, chunks: [],
+                        startTime: Date.now(), speed: 0, connected: true, complete: false
+                      }
+                    }
+                  }
+                })
+              })
+
+              peer.on('error', (err) => {
+                console.error('[peer] error:', err)
+                setError('Gagal terhubung ke penerima. Coba lagi.')
+                if (peerRef.current) {
+                  peerRef.current.destroy()
+                  peerRef.current = null
+                }
+                recvStateRef.current = null
+                setReceiving(null)
+              })
+
+              peer.on('close', () => {
+                console.log('[peer] closed')
+                peerRef.current = null
+              })
+            }
+            peerRef.current.signal(signal)
+          } catch (err) {
+            console.error('[signal] error:', err)
+          }
+        } else if (message.type === 'error') {
+          console.error('[ws] error:', message.message)
+          setError(message.message)
+        }
+      }
+
+      ws.onclose = () => {
+        console.log('[ws] disconnected, reconnecting...')
+        reconnectTimeout = setTimeout(connect, 3000)
+      }
+
+      ws.onerror = (e) => {
+        console.error('[ws] error', e)
+        ws.close()
+      }
+    }
 
     let chain = Promise.resolve()
+    const finalizeTransfer = async () => {
+      const state = recvStateRef.current
+      if (!state || state.finalized) return
+      state.finalized = true
 
-    socket.on('signal', ({ from, signal }) => {
-      console.log('[signal] from', from, 'type:', signal?.type)
-      const fromUser = usersRef.current.find(u => u.id === from)?.name || 'Seseorang'
-
-      try {
-        if (!peerRef.current) {
-          const peer = new Peer(PEER_CONFIG)
-          peerRef.current = peer
-
-          peer.on('signal', (answer) => {
-            console.log('[peer] answering')
-            socket.emit('signal', { to: from, signal: answer })
-          })
-
-          peer.on('connect', () => {
-            console.log('[peer] connected!')
-            setReceiving(r => r ? { ...r, connected: true } : r)
-            setError(null)
-          })
-
-          const toArrayBuffer = (data) => {
-            if (data instanceof ArrayBuffer) return Promise.resolve(data)
-            if (data instanceof Uint8Array) return Promise.resolve(data.slice(0).buffer)
-            if (ArrayBuffer.isView(data)) return Promise.resolve(new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice(0).buffer)
-            if (data instanceof Blob) return data.arrayBuffer()
-            if (typeof data === 'string') return Promise.resolve(new TextEncoder().encode(data).buffer)
-            return Promise.resolve(data)
-          }
-
-          peer.on('data', (data) => {
-            chain = chain.then(async () => {
-              const buffer = await toArrayBuffer(data)
-
-              try {
-                if (buffer.byteLength < 5000) {
-                  const str = new TextDecoder().decode(buffer)
-                  const meta = JSON.parse(str)
-                  if (meta.type === 'meta') {
-                    const newState = {
-                      name: meta.name,
-                      size: meta.size,
-                      mime: meta.mime || 'application/octet-stream',
-                      checksum: meta.checksum,
-                      fromName: fromUser,
-                      received: 0,
-                      chunks: [],
-                      startTime: Date.now(),
-                      speed: 0,
-                      connected: true
-                    }
-                    recvStateRef.current = newState
-                    setReceiving(newState)
-                    return
-                  }
-                }
-              } catch (_) {}
-
-              if (recvStateRef.current) {
-                const current = recvStateRef.current
-                current.chunks.push(buffer)
-                current.received += buffer.byteLength
-                const now = Date.now()
-                const elapsed = (now - current.startTime) / 1000
-                current.speed = elapsed > 0 ? current.received / elapsed : 0
-                setReceiving({ ...current })
-
-                if (current.received >= current.size) {
-                  const blob = new Blob(current.chunks, { type: current.mime })
-                  const receivedDigest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
-                  const receivedChecksum = Array.from(new Uint8Array(receivedDigest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
-                  if (current.checksum && receivedChecksum !== current.checksum) {
-                    setError('Berkas rusak saat transfer. Pengiriman dibatalkan.')
-                    return
-                  }
-                  const url = URL.createObjectURL(blob)
-                  const a = document.createElement('a')
-                  a.href = url
-                  a.download = current.name
-                  document.body.appendChild(a)
-                  a.click()
-                  document.body.removeChild(a)
-                  URL.revokeObjectURL(url)
-
-                  audioRef.current.play().catch(() => {})
-                  setNotify({ type: 'success', message: `Berkas "${current.name}" diterima utuh tanpa kompresi` })
-                  setHistory(h => [{ name: current.name, size: current.size, peer: current.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
-
-                  setTimeout(() => {
-                    if (peerRef.current) {
-                      peerRef.current.destroy()
-                      peerRef.current = null
-                    }
-                    recvStateRef.current = null
-                    setReceiving(null)
-                  }, 1000)
-                }
-              }
-            })
-          })
-
-          peer.on('error', (err) => {
-            console.error('[peer] error:', err)
-            setError('Gagal terhubung ke penerima. Coba lagi.')
-            if (peerRef.current) {
-              peerRef.current.destroy()
-              peerRef.current = null
-            }
-            recvStateRef.current = null
-            setReceiving(null)
-          })
-
-          peer.on('close', () => {
-            console.log('[peer] closed')
-            peerRef.current = null
-          })
-        }
-        peerRef.current.signal(signal)
-      } catch (err) {
-        console.error('[signal] error:', err)
+      console.log('[file] finalizing, total:', state.received, 'expected:', state.size)
+      if (state.received < state.size) {
+        console.warn('[file] incomplete:', state.received, '/', state.size)
       }
-    })
 
-    return () => { socket.off('users'); socket.off('signal') }
-  }, [])
+      const blob = new Blob(state.chunks, { type: state.mime })
+      const receivedDigest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
+      const receivedChecksum = Array.from(new Uint8Array(receivedDigest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
+      if (state.checksum && receivedChecksum !== state.checksum) {
+        setError('Berkas rusak saat transfer. Pengiriman dibatalkan.')
+        recvStateRef.current = null
+        setReceiving(null)
+        return
+      }
+
+      const url = URL.createObjectURL(blob)
+      console.log('[file] download ready:', state.name, 'url:', url)
+      setReceivedFiles(prev => [...prev, { name: state.name, size: state.size, url, time: Date.now() }])
+      setNotify({ type: 'success', message: `Berkas "${state.name}" diterima utuh tanpa kompresi` })
+      setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
+      audioRef.current.play().catch(() => {})
+
+      setTimeout(() => {
+        if (peerRef.current) {
+          peerRef.current.destroy()
+          peerRef.current = null
+        }
+        recvStateRef.current = null
+        setReceiving(null)
+      }, 1000)
+    }
+
+    connect()
+
+    return () => {
+      clearTimeout(reconnectTimeout)
+      if (socketRef.current) {
+        socketRef.current.onclose = null
+        socketRef.current.close()
+      }
+    }
+  }, [joined])
+
+  useEffect(() => {
+    return () => {
+      receivedFiles.forEach(f => URL.revokeObjectURL(f.url))
+    }
+  }, [receivedFiles])
 
   const join = (e) => {
     e.preventDefault()
     if (!name.trim()) return
-    console.log('Joining with name:', name.trim())
-    socket.emit('join', name.trim())
     setJoined(true)
   }
 
@@ -260,39 +339,69 @@ export default function App() {
 
     peer.on('signal', (signal) => {
       console.log('[peer] offering, type:', signal?.type)
-      socket.emit('signal', { to: selected.id, signal })
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({ type: signal.type || 'ice-candidate', target: selected.id, data: signal }))
+      }
     })
 
     let connectTimeout
     peer.on('connect', async () => {
-      console.log('[peer] connected, sending meta...')
+      console.log('[peer] connected, waiting for channel ready...')
       clearTimeout(connectTimeout)
       setSending(s => s ? { ...s, connected: true } : s)
 
       try {
         const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
         const checksum = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
-        const meta = JSON.stringify({ type: 'meta', name: file.name, size: file.size, mime: file.type, checksum })
+
+        const meta = JSON.stringify({ 
+          type: 'file-meta', 
+          name: file.name, 
+          size: file.size, 
+          mime: file.type, 
+          checksum 
+        })
+        console.log('[file] sending meta:', { name: file.name, size: file.size, mime: file.type })
         peer.send(meta)
 
-        const chunkSize = 64 * 1024
+        await new Promise(r => setTimeout(r, 100))
+
+        const chunkSize = 16 * 1024
+        const maxBufferedAmount = 256 * 1024
         let offset = 0
+        let chunkCount = 0
         const startTime = Date.now()
-        let sendTimeout = null
 
         const send = async () => {
-          if (!peer || !peer.connected) return
+          if (!peer.connected) return
+
+          const bufferedAmount = peer.bufferSize
+          if (bufferedAmount > maxBufferedAmount) {
+            setTimeout(send, 20)
+            return
+          }
+
           const chunk = file.slice(offset, offset + chunkSize)
           const buffer = await chunk.arrayBuffer()
           if (!peer.connected) return
+
           peer.send(buffer)
           offset += buffer.byteLength
+          chunkCount += 1
+
+          if (chunkCount % 50 === 0 || offset === file.size) {
+            console.log('[file] sent:', offset, '/', file.size)
+          }
+
           const elapsed = (Date.now() - startTime) / 1000
           const speed = elapsed > 0 ? offset / elapsed : 0
           setSending(s => s ? { ...s, sent: offset, speed } : s)
+
           if (offset < file.size) {
-            setTimeout(send, peer.bufferSize > chunkSize * 8 ? 40 : 0)
+            setTimeout(send, 0)
           } else {
+            console.log('[file] sending complete signal')
+            peer.send(JSON.stringify({ type: 'file-end' }))
             setHistory(h => [{ name: file.name, size: file.size, peer: selected.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
             setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim ke ${selected.name}` })
             setTimeout(() => {
@@ -302,8 +411,7 @@ export default function App() {
             }, 2000)
           }
         }
-        const startSend = () => { sendTimeout = setTimeout(send, 200) }
-        startSend()
+        send()
       } catch (err) {
         console.error('[send] error:', err)
         setError('Gagal mengirim berkas.')
@@ -428,5 +536,33 @@ export default function App() {
       </article>
     </section>
     {notify && <div className={`toast ${notify.type}`} onClick={() => setNotify(null)}>{notify.message}</div>}
+    {receivedFiles.length > 0 && (
+      <div className="download-panel">
+        <div className="download-panel-header">
+          <span>Berkas diterima ({receivedFiles.length})</span>
+          <button onClick={() => {
+            receivedFiles.forEach(f => URL.revokeObjectURL(f.url))
+            setReceivedFiles([])
+          }} aria-label="Tutup daftar">×</button>
+        </div>
+        {receivedFiles.map((file, idx) => (
+          <div key={idx} className="download-item">
+            <div className="download-info">
+              <b>{file.name}</b>
+              <small>{formatSize(file.size)}</small>
+            </div>
+            <a
+              href={file.url}
+              download={file.name}
+              className="download-btn"
+              onClick={() => {
+                console.log('[download] clicked:', file.name)
+                // Hapus satu file setelah diunduh (opsional) atau biarkan di list
+              }}
+            >Download</a>
+          </div>
+        ))}
+      </div>
+    )}
   </main>
 }
