@@ -131,6 +131,12 @@ export default function App() {
   }, [dark])
 
   useEffect(() => {
+    if (!notify) return
+    const timer = setTimeout(() => setNotify(null), 1000)
+    return () => clearTimeout(timer)
+  }, [notify])
+
+  useEffect(() => {
     usersRef.current = users
   }, [users])
 
@@ -554,7 +560,7 @@ export default function App() {
 
   return <main className={`app ${dark ? 'dark' : ''}`}>
     <header>
-      <div className="brand-wrap"><Logo dark={dark} /><span className="pill">P2P</span><span className="pln-separator" aria-hidden="true" /><PlnBadge label="PLN Workspace" /></div>
+       <div className="brand-wrap"><Logo dark={dark} /><span className="pln-separator" aria-hidden="true" /><PlnBadge label="PLN Workspace" /></div>
       <div className="profile">
         <span className="connection-status"><span className="dot" /> Terhubung</span>
         <div className="profile-container">
