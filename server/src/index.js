@@ -8,8 +8,17 @@ function checkAuth(request, env) {
   const url = new URL(request.url)
   const key = url.searchParams.get('key') || request.headers.get('x-room-key')
   const expected = env.ROOM_KEY
-  if (!expected) return true
-  return key === expected
+
+  // ROOM_KEY configured: enforce strictly
+  if (expected) {
+    return key === expected
+  }
+
+  // ROOM_KEY not configured — fail closed in production,
+  // but allow local development (wrangler dev / 127.0.0.1):
+  const host = url.hostname
+  const isLocalDev = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+  return isLocalDev
 }
 
 export default {
