@@ -112,6 +112,7 @@ export default function App() {
   const [error, setError] = useState(null)
   const [receivedFiles, setReceivedFiles] = useState([])
   const [socketId, setSocketId] = useState(null)
+  const [wsState, setWsState] = useState('disconnected')
   const peerRef = useRef(null)
   const recvStateRef = useRef(null)
   const usersRef = useRef([])
@@ -125,6 +126,20 @@ export default function App() {
   const [showRename, setShowRename] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [renameError, setRenameError] = useState('')
+  const reconnectAttemptRef = useRef(0)
+  const reconnectTimerRef = useRef(null)
+  const shouldReconnectRef = useRef(true)
+  const nameRef = useRef(name)
+  const socketIdRef = useRef(socketId)
+  const backpressureTimerRef = useRef(null)
+
+  useEffect(() => {
+    nameRef.current = name
+  }, [name])
+
+  useEffect(() => {
+    socketIdRef.current = socketId
+  }, [socketId])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -143,19 +158,74 @@ export default function App() {
   useEffect(() => {
     if (!joined) return
 
-    let reconnectTimeout
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const MAX_RECONNECT_DELAY = 30000
+    const BASE_DELAY = 1000
+
+    const scheduleReconnect = () => {
+      if (!shouldReconnectRef.current) return
+      
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+      }
+      
+      const attempt = reconnectAttemptRef.current
+      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt), MAX_RECONNECT_DELAY)
+      const jitter = Math.random() * 200
+      const finalDelay = delay + jitter
+
+      console.log(`[ws] reconnect scheduled in ${Math.round(finalDelay)}ms (attempt ${attempt + 1})`)
+      setWsState('reconnecting')
+      
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null
+        reconnectAttemptRef.current += 1
+        connect()
+      }, finalDelay)
+    }
+
+    const handleSocketClosed = (ws) => {
+      if (socketRef.current !== ws) return
+      console.log('[ws] closed or error, cleaning up socket')
+      
+      socketRef.current = null
+      wsRef.current = null
+      
+      if (shouldReconnectRef.current) {
+        scheduleReconnect()
+      } else {
+        setWsState('disconnected')
+      }
+    }
+
     const connect = () => {
+      if (!shouldReconnectRef.current) return
+      
+      const existing = socketRef.current
+      if (existing && (existing.readyState === WebSocket.CONNECTING || existing.readyState === WebSocket.OPEN)) {
+        return
+      }
+
+      console.log('[ws] connecting...')
+      setWsState('connecting')
+
       const ws = new WebSocket(SIGNALING_URL)
       socketRef.current = ws
       wsRef.current = ws
 
       ws.onopen = () => {
+        if (socketRef.current !== ws) {
+          ws.close()
+          return
+        }
         console.log('[ws] connected')
-        ws.send(JSON.stringify({ type: 'register', name }))
+        reconnectAttemptRef.current = 0
+        setWsState('connected')
+        ws.send(JSON.stringify({ type: 'register', name: nameRef.current }))
       }
 
       ws.onmessage = (event) => {
+        if (socketRef.current !== ws) return
+        
         let message
         try {
           message = JSON.parse(event.data)
@@ -167,10 +237,13 @@ export default function App() {
           console.log('[ws] registered:', message.id)
           setSocketId(message.id)
         } else if (message.type === 'users') {
+          const currentSocketId = socketIdRef.current
+          const currentName = nameRef.current
+          
           console.log('[ws] users:', message.users.map(u => u.name))
-          const myId = socketId || message.users.find(u => u.name === name)?.id
+          const myId = currentSocketId || message.users.find(u => u.name === currentName)?.id
           if (myId) setSocketId(myId)
-          setUsers(message.users.filter((u) => u.id !== (myId || socketId)))
+          setUsers(message.users.filter((u) => u.id !== (myId || currentSocketId)))
         } else if (message.type === 'offer' || message.type === 'answer' || message.type === 'ice-candidate') {
           const from = message.from
           const signal = message.data
@@ -183,17 +256,23 @@ export default function App() {
               peerRef.current = peer
 
               peer.on('signal', (answer) => {
+                if (peerRef.current !== peer || peer.destroyed) return
                 console.log('[peer] answering')
-                ws.send(JSON.stringify({ type: answer.type, target: from, data: answer }))
+                const s = socketRef.current
+                if (s && s.readyState === WebSocket.OPEN) {
+                  s.send(JSON.stringify({ type: answer.type, target: from, data: answer }))
+                }
               })
 
               peer.on('connect', () => {
+                if (peerRef.current !== peer || peer.destroyed) return
                 console.log('[peer] connected!')
                 setReceiving(r => r ? { ...r, connected: true } : r)
                 setError(null)
               })
 
               peer.on('data', (data) => {
+                if (peerRef.current !== peer || peer.destroyed) return
                 chain = chain.then(async () => {
                   if (typeof data === 'string') {
                     try {
@@ -264,22 +343,32 @@ export default function App() {
               })
 
               peer.on('error', (err) => {
-                console.error('[peer] error:', err)
+                const errCode = err?.code || err?.name || 'unknown'
+                console.error('[peer] error:', errCode)
                 setError('Gagal terhubung ke penerima. Coba lagi.')
-                if (peerRef.current) {
+                if (peerRef.current === peer) {
                   peerRef.current.destroy()
                   peerRef.current = null
                 }
-                recvStateRef.current = null
-                setReceiving(null)
+                if (recvStateRef.current?.fromName === fromUser) {
+                  recvStateRef.current = null
+                  setReceiving(null)
+                }
               })
 
               peer.on('close', () => {
+                if (peerRef.current !== peer) return
                 console.log('[peer] closed')
                 peerRef.current = null
+                if (recvStateRef.current?.fromName === fromUser) {
+                  recvStateRef.current = null
+                  setReceiving(null)
+                }
               })
             }
-            peerRef.current.signal(signal)
+            if (peerRef.current && !peerRef.current.destroyed) {
+              peerRef.current.signal(signal)
+            }
           } catch (err) {
             console.error('[signal] error:', err)
           }
@@ -295,13 +384,12 @@ export default function App() {
       }
 
       ws.onclose = () => {
-        console.log('[ws] disconnected, reconnecting...')
-        reconnectTimeout = setTimeout(connect, 3000)
+        handleSocketClosed(ws)
       }
 
-      ws.onerror = (e) => {
-        console.error('[ws] error', e)
-        ws.close()
+      ws.onerror = () => {
+        console.error('[ws] error')
+        handleSocketClosed(ws)
       }
     }
 
@@ -317,6 +405,7 @@ export default function App() {
       }
 
       const blob = new Blob(state.chunks, { type: state.mime })
+      state.chunks = []
       const receivedDigest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
       const receivedChecksum = Array.from(new Uint8Array(receivedDigest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
       if (state.checksum && receivedChecksum !== state.checksum) {
@@ -344,17 +433,34 @@ export default function App() {
       }, 1000)
     }
 
+    shouldReconnectRef.current = true
     connect()
 
     return () => {
-      clearTimeout(reconnectTimeout)
-      if (socketRef.current) {
-        socketRef.current.onclose = null
-        socketRef.current.close()
+      shouldReconnectRef.current = false
+      
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
       }
-      if (wsRef.current) {
-        wsRef.current = null
+      
+      if (backpressureTimerRef.current) {
+        clearTimeout(backpressureTimerRef.current)
+        backpressureTimerRef.current = null
       }
+      
+      const ws = socketRef.current
+      if (ws) {
+        ws.onclose = null
+        ws.onerror = null
+        ws.onmessage = null
+        ws.onopen = null
+        if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) {
+          ws.close()
+        }
+      }
+      socketRef.current = null
+      wsRef.current = null
     }
   }, [joined])
 
@@ -398,6 +504,10 @@ export default function App() {
       if (settled) return
       settled = true
       clearTimeout(connectTimeout)
+      if (backpressureTimerRef.current) {
+        clearTimeout(backpressureTimerRef.current)
+        backpressureTimerRef.current = null
+      }
       if (peerRef.current === peer) {
         peer.destroy()
         peerRef.current = null
@@ -407,13 +517,15 @@ export default function App() {
     }
 
     peer.on('signal', (signal) => {
+      if (peerRef.current !== peer || peer.destroyed) return
       console.log('[peer] offering, type:', signal?.type)
-      if (socketRef.current?.readyState === WebSocket.OPEN) {
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
         socketRef.current.send(JSON.stringify({ type: signal.type || 'ice-candidate', target: recipient.id, data: signal }))
       }
     })
 
     peer.on('connect', async () => {
+      if (peerRef.current !== peer || peer.destroyed) return
       console.log('[peer] connected, waiting for channel ready...')
       clearTimeout(connectTimeout)
       setSending(s => s ? { ...s, connected: true } : s)
@@ -429,8 +541,10 @@ export default function App() {
 
         const chunkSize = 16 * 1024
         const maxBufferedAmount = 256 * 1024
+        const PROGRESS_UPDATE_BYTES = 1024 * 1024
         let offset = 0
         let chunkCount = 0
+        let lastProgressUpdate = 0
         const startTime = Date.now()
 
         const send = async () => {
@@ -441,7 +555,13 @@ export default function App() {
 
           const bufferedAmount = peer.bufferSize
           if (bufferedAmount > maxBufferedAmount) {
-            setTimeout(send, 20)
+            if (backpressureTimerRef.current) {
+              return
+            }
+            backpressureTimerRef.current = setTimeout(() => {
+              backpressureTimerRef.current = null
+              send()
+            }, 20)
             return
           }
 
@@ -458,9 +578,12 @@ export default function App() {
 
           if (chunkCount % 50 === 0 || offset === file.size) console.log('[file] sent:', offset, '/', file.size)
 
-          const elapsed = (Date.now() - startTime) / 1000
-          const speed = elapsed > 0 ? offset / elapsed : 0
-          setSending(s => s ? { ...s, sent: offset, speed } : s)
+          if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
+            const elapsed = (Date.now() - startTime) / 1000
+            const speed = elapsed > 0 ? offset / elapsed : 0
+            setSending(s => s ? { ...s, sent: offset, speed } : s)
+            lastProgressUpdate = offset
+          }
 
           if (offset < file.size) {
             setTimeout(send, 0)
@@ -487,13 +610,16 @@ export default function App() {
     }, 40000)
 
     peer.on('error', (err) => {
-      console.error('[peer] error:', err)
+      if (peerRef.current !== peer) return
+      console.error('[peer] error:', err?.code || err?.name || 'unknown')
       setError('Gagal terhubung. Coba lagi.')
       finish(false)
     })
 
     peer.on('close', () => {
-      if (!settled) finish(false)
+      if (peerRef.current !== peer || settled) return
+      console.log('[peer] closed')
+      finish(false)
     })
   }), [])
 
@@ -508,8 +634,9 @@ export default function App() {
       setRenameValue('')
       return
     }
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'rename', name: newName }))
+    const s = socketRef.current
+    if (s && s.readyState === WebSocket.OPEN) {
+      s.send(JSON.stringify({ type: 'rename', name: newName }))
     }
   }
 
@@ -562,7 +689,10 @@ export default function App() {
     <header>
        <div className="brand-wrap"><Logo dark={dark} /><span className="pln-separator" aria-hidden="true" /><PlnBadge label="PLN Workspace" /></div>
       <div className="profile">
-        <span className="connection-status"><span className="dot" /> Terhubung</span>
+        <span className="connection-status">
+          <span className={`dot ${wsState === 'connected' ? '' : 'pulse'}`} style={wsState !== 'connected' ? { background: '#e7a43c', boxShadow: '0 0 0 3px rgba(231,164,60,.14)' } : {}} />
+          {wsState === 'connected' ? 'Terhubung' : wsState === 'connecting' || wsState === 'reconnecting' ? 'Menghubungkan...' : 'Terputus'}
+        </span>
         <div className="profile-container">
           <button className="profile-trigger" onClick={() => setShowProfile(!showProfile)}>
             <span className="name-badge">{initials(name)} <b>{name}</b></span>
