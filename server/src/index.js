@@ -68,6 +68,11 @@ export class SignalingRoom {
       return
     }
 
+    if (raw.length > 1024 * 1024) {
+      this.sendError(user, 'Message too large')
+      return
+    }
+
     let message
     try {
       message = JSON.parse(raw)
@@ -126,6 +131,11 @@ export class SignalingRoom {
 
     if (typeof message.target !== 'string' || !message.target) {
       this.sendError(user, 'Target is required')
+      return
+    }
+
+    if (!message.data || typeof message.data !== 'object' || Array.isArray(message.data)) {
+      this.sendError(user, 'Invalid signal payload')
       return
     }
 

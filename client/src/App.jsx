@@ -175,7 +175,7 @@ export default function App() {
       const jitter = Math.random() * 200
       const finalDelay = delay + jitter
 
-      console.log(`[ws] reconnect scheduled in ${Math.round(finalDelay)}ms (attempt ${attempt + 1})`)
+      if (import.meta.env.DEV) console.log(`[ws] reconnect scheduled in ${Math.round(finalDelay)}ms (attempt ${attempt + 1})`)
       setWsState('reconnecting')
       
       reconnectTimerRef.current = setTimeout(() => {
@@ -187,7 +187,7 @@ export default function App() {
 
     const handleSocketClosed = (ws) => {
       if (socketRef.current !== ws) return
-      console.log('[ws] closed or error, cleaning up socket')
+      if (import.meta.env.DEV) console.log('[ws] closed or error, cleaning up socket')
       
       socketRef.current = null
       wsRef.current = null
@@ -207,7 +207,7 @@ export default function App() {
         return
       }
 
-      console.log('[ws] connecting...')
+      if (import.meta.env.DEV) console.log('[ws] connecting...')
       setWsState('connecting')
 
       const ws = new WebSocket(`${SIGNALING_URL}?key=${encodeURIComponent(accessKey)}`)
@@ -219,7 +219,7 @@ export default function App() {
           ws.close()
           return
         }
-        console.log('[ws] connected')
+        if (import.meta.env.DEV) console.log('[ws] connected')
         reconnectAttemptRef.current = 0
         setWsState('connected')
         ws.send(JSON.stringify({ type: 'register', name: nameRef.current }))
@@ -236,20 +236,20 @@ export default function App() {
         }
 
         if (message.type === 'registered') {
-          console.log('[ws] registered:', message.id)
+          if (import.meta.env.DEV) console.log('[ws] registered:', message.id)
           setSocketId(message.id)
         } else if (message.type === 'users') {
           const currentSocketId = socketIdRef.current
           const currentName = nameRef.current
           
-          console.log('[ws] users:', message.users.map(u => u.name))
+          if (import.meta.env.DEV) console.log('[ws] users:', message.users.map(u => u.name))
           const myId = currentSocketId || message.users.find(u => u.name === currentName)?.id
           if (myId) setSocketId(myId)
           setUsers(message.users.filter((u) => u.id !== (myId || currentSocketId)))
         } else if (message.type === 'offer' || message.type === 'answer' || message.type === 'ice-candidate') {
           const from = message.from
           const signal = message.data
-          console.log('[signal] from', from, 'type:', signal?.type)
+          if (import.meta.env.DEV) console.log('[signal] from', from, 'type:', signal?.type)
           const fromUser = usersRef.current.find(u => u.id === from)?.name || 'Seseorang'
 
           try {
@@ -259,7 +259,7 @@ export default function App() {
 
               peer.on('signal', (answer) => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
-                console.log('[peer] answering')
+                if (import.meta.env.DEV) console.log('[peer] answering')
                 const s = socketRef.current
                 if (s && s.readyState === WebSocket.OPEN) {
                   s.send(JSON.stringify({ type: answer.type || 'ice-candidate', target: from, data: answer }))
@@ -268,7 +268,7 @@ export default function App() {
 
               peer.on('connect', () => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
-                console.log('[peer] connected!')
+                if (import.meta.env.DEV) console.log('[peer] connected!')
                 setReceiving(r => r ? { ...r, connected: true } : r)
                 setError(null)
               })
@@ -280,7 +280,7 @@ export default function App() {
                     try {
                       const msg = JSON.parse(data)
                       if (msg.type === 'file-meta') {
-                        console.log('[file] meta received:', msg)
+                        if (import.meta.env.DEV) console.log('[file] meta received:', msg)
                         const pending = recvStateRef.current?.pendingChunks || []
                         recvStateRef.current = {
                           name: msg.name,
@@ -302,7 +302,7 @@ export default function App() {
                         return
                       }
                       if (msg.type === 'file-end') {
-                        console.log('[file] end signal received')
+                        if (import.meta.env.DEV) console.log('[file] end signal received')
                         if (recvStateRef.current) {
                           recvStateRef.current.complete = true
                           await finalizeTransfer()
@@ -310,7 +310,7 @@ export default function App() {
                         return
                       }
                     } catch {
-                      console.warn('[file] non-JSON string received, treating as binary')
+                      if (import.meta.env.DEV) console.warn('[file] non-JSON string received, treating as binary')
                     }
                   }
 
@@ -336,7 +336,7 @@ export default function App() {
                         await finalizeTransfer()
                       }
                     } else {
-                      console.log('[file] early chunk buffered:', chunk.byteLength)
+                      if (import.meta.env.DEV) console.log('[file] early chunk buffered:', chunk.byteLength)
                       recvStateRef.current = {
                         pendingChunks: [chunk],
                         name: null, size: null, mime: null, checksum: null,
@@ -350,7 +350,7 @@ export default function App() {
 
               peer.on('error', (err) => {
                 const errCode = err?.code || err?.name || 'unknown'
-                console.error('[peer] error:', errCode)
+                if (import.meta.env.DEV) console.error('[peer] error:', errCode)
                 setError('Gagal terhubung ke penerima. Coba lagi.')
                 if (receiverPeerRef.current === peer) {
                   receiverPeerRef.current.destroy()
@@ -364,7 +364,7 @@ export default function App() {
 
               peer.on('close', () => {
                 if (receiverPeerRef.current !== peer) return
-                console.log('[peer] closed')
+                if (import.meta.env.DEV) console.log('[peer] closed')
                 receiverPeerRef.current = null
                 if (recvStateRef.current?.fromName === fromUser) {
                   recvStateRef.current = null
@@ -376,13 +376,13 @@ export default function App() {
               receiverPeerRef.current.signal(signal)
             }
           } catch (err) {
-            console.error('[signal] error:', err)
+            if (import.meta.env.DEV) console.error('[signal] error:', err)
           }
         } else if (message.type === 'error') {
-          console.error('[ws] error:', message.message)
+          if (import.meta.env.DEV) console.error('[ws] error:', message.message)
           setError(message.message)
         } else if (message.type === 'renamed') {
-          console.log('[ws] renamed to:', message.name)
+          if (import.meta.env.DEV) console.log('[ws] renamed to:', message.name)
           setName(message.name)
           localStorage.setItem('kirimin_username', message.name)
           setShowRename(false)
@@ -394,7 +394,7 @@ export default function App() {
       }
 
       ws.onerror = () => {
-        console.error('[ws] error')
+        if (import.meta.env.DEV) console.error('[ws] error')
         handleSocketClosed(ws)
       }
     }
@@ -405,9 +405,9 @@ export default function App() {
       if (!state || state.finalized) return
       state.finalized = true
 
-      console.log('[file] finalizing, total:', state.received, 'expected:', state.size)
+      if (import.meta.env.DEV) console.log('[file] finalizing, total:', state.received, 'expected:', state.size)
       if (state.received < state.size) {
-        console.warn('[file] incomplete:', state.received, '/', state.size)
+        if (import.meta.env.DEV) console.warn('[file] incomplete:', state.received, '/', state.size)
       }
 
       const blob = new Blob(state.chunks, { type: state.mime })
@@ -422,7 +422,7 @@ export default function App() {
       }
 
       const url = URL.createObjectURL(blob)
-      console.log('[file] download ready:', state.name, 'url:', url)
+      if (import.meta.env.DEV) console.log('[file] download ready:', state.name, 'url:', url)
       urlCacheRef.current.push(url)
       setReceivedFiles(prev => [...prev, { name: state.name, size: state.size, url, time: Date.now() }])
       setNotify({ type: 'success', message: `Berkas "${state.name}" diterima utuh tanpa kompresi` })
@@ -533,7 +533,7 @@ export default function App() {
 
     peer.on('signal', (signal) => {
       if (senderPeerRef.current !== peer || peer.destroyed) return
-      console.log('[peer] offering, type:', signal?.type)
+      if (import.meta.env.DEV) console.log('[peer] offering, type:', signal?.type)
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
         socketRef.current.send(JSON.stringify({ type: signal.type || 'ice-candidate', target: recipient.id, data: signal }))
       }
@@ -541,7 +541,7 @@ export default function App() {
 
     peer.on('connect', async () => {
       if (senderPeerRef.current !== peer || peer.destroyed) return
-      console.log('[peer] connected, waiting for channel ready...')
+      if (import.meta.env.DEV) console.log('[peer] connected, waiting for channel ready...')
       clearTimeout(connectTimeout)
       setSending(s => s ? { ...s, connected: true } : s)
 
@@ -549,7 +549,7 @@ export default function App() {
         const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
         const checksum = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
         const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum })
-        console.log('[file] sending meta:', { name: file.name, size: file.size, mime: file.type })
+        if (import.meta.env.DEV) console.log('[file] sending meta:', { name: file.name, size: file.size, mime: file.type })
         peer.send(meta)
 
         await new Promise(r => setTimeout(r, 100))
@@ -591,7 +591,7 @@ export default function App() {
           offset += buffer.byteLength
           chunkCount += 1
 
-          if (chunkCount % 50 === 0 || offset === file.size) console.log('[file] sent:', offset, '/', file.size)
+          if (chunkCount % 50 === 0 || offset === file.size) if (import.meta.env.DEV) console.log('[file] sent:', offset, '/', file.size)
 
           if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
             const elapsed = (Date.now() - startTime) / 1000
@@ -605,7 +605,7 @@ export default function App() {
             return
           }
 
-          console.log('[file] sending complete signal')
+          if (import.meta.env.DEV) console.log('[file] sending complete signal')
           peer.send(JSON.stringify({ type: 'file-end' }))
           setHistory(h => [{ name: file.name, size: file.size, peer: recipient.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
           setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim ke ${recipient.name}` })
@@ -613,7 +613,7 @@ export default function App() {
         }
         send()
       } catch (err) {
-        console.error('[send] error:', err)
+        if (import.meta.env.DEV) console.error('[send] error:', err)
         setError('Gagal mengirim berkas.')
         finish(false)
       }
@@ -626,14 +626,14 @@ export default function App() {
 
     peer.on('error', (err) => {
       if (senderPeerRef.current !== peer) return
-      console.error('[peer] error:', err?.code || err?.name || 'unknown')
+      if (import.meta.env.DEV) console.error('[peer] error:', err?.code || err?.name || 'unknown')
       setError('Gagal terhubung. Coba lagi.')
       finish(false)
     })
 
     peer.on('close', () => {
       if (senderPeerRef.current !== peer || settled) return
-      console.log('[peer] closed')
+      if (import.meta.env.DEV) console.log('[peer] closed')
       finish(false)
     })
   }), [])
