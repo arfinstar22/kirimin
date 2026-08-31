@@ -102,12 +102,19 @@ export default function App() {
   const prefersDark = useMediaQuery('(prefers-color-scheme: dark)')
   const [dark, setDark] = useState(prefersDark)
   const [name, setName] = useState(() => localStorage.getItem('kirimin_username') || '')
-  const [joined, setJoined] = useState(false)
+  const [joined, setJoined] = useState(() => Boolean(localStorage.getItem('kirimin_username')?.trim()))
   const [users, setUsers] = useState([])
   const [selected, setSelected] = useState(null)
   const [sending, setSending] = useState(null)
   const [receiving, setReceiving] = useState(null)
-  const [history, setHistory] = useState([])
+  const [history, setHistory] = useState(() => {
+    try {
+      const saved = localStorage.getItem('kirimin_transfer_history')
+      return saved ? JSON.parse(saved) : []
+    } catch {
+      return []
+    }
+  })
   const [notify, setNotify] = useState(null)
   const [error, setError] = useState(null)
   const [receivedFiles, setReceivedFiles] = useState([])
@@ -145,6 +152,14 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
   }, [dark])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('kirimin_transfer_history', JSON.stringify(history))
+    } catch {
+      /* history persistence is best-effort; ignore quota/serialization errors */
+    }
+  }, [history])
 
   useEffect(() => {
     if (!notify) return
@@ -367,6 +382,7 @@ export default function App() {
               peer.on('error', (err) => {
                 const errCode = err?.code || err?.name || 'unknown'
                 if (import.meta.env.DEV) console.error('[peer] error:', errCode)
+                if (receiverCompleted) return
                 setError('Gagal terhubung ke penerima. Coba lagi.')
                 if (receiverPeerRef.current === peer) {
                   receiverPeerRef.current.destroy()
@@ -416,6 +432,7 @@ export default function App() {
     }
 
     let chain = Promise.resolve()
+    let receiverCompleted = false
     const finalizeTransfer = async () => {
       const state = recvStateRef.current
       if (!state || state.finalized) return
@@ -444,6 +461,7 @@ export default function App() {
       setNotify({ type: 'success', message: `Berkas "${state.name}" diterima utuh tanpa kompresi` })
       setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
       audioRef.current.play().catch(() => {})
+      receiverCompleted = true
 
       setTimeout(() => {
         if (receiverPeerRef.current) {
@@ -531,6 +549,7 @@ export default function App() {
 
     let connectTimeout
     let settled = false
+    let transferDone = false
     const finish = (success) => {
       if (settled) return
       settled = true
@@ -623,6 +642,7 @@ export default function App() {
 
           if (import.meta.env.DEV) console.log('[file] sending complete signal')
           peer.send(JSON.stringify({ type: 'file-end' }))
+          transferDone = true
           setHistory(h => [{ name: file.name, size: file.size, peer: recipient.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
           setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim ke ${recipient.name}` })
           setTimeout(() => finish(true), 2000)
@@ -642,10 +662,12 @@ export default function App() {
 
     peer.on('error', (err) => {
       if (senderPeerRef.current !== peer) return
+      if (transferDone) return
       if (import.meta.env.DEV) console.error('[peer] error:', err?.code || err?.name || 'unknown')
       setError('Gagal terhubung. Coba lagi.')
       finish(false)
     })
+
 
     peer.on('close', () => {
       if (senderPeerRef.current !== peer || settled) return
@@ -670,6 +692,13 @@ export default function App() {
       s.send(JSON.stringify({ type: 'rename', name: newName }))
     } else {
       setRenameError('Belum terhubung ke server')
+    }
+  }
+
+  const clearHistory = () => {
+    if (window.confirm('Hapus semua riwayat transfer?')) {
+      localStorage.removeItem('kirimin_transfer_history')
+      setHistory([])
     }
   }
 
@@ -769,7 +798,7 @@ export default function App() {
           ))}
         </div>
         <div className="sidebar-section history-section">
-          <div className="sidebar-title"><span>Riwayat Transfer</span></div>
+          <div className="sidebar-title"><span>Riwayat Transfer</span>{history.length > 0 && <button onClick={clearHistory} className="history-clear" style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--muted)', textTransform: 'none', letterSpacing: 'normal', padding: 0 }}>Hapus Riwayat</button>}</div>
           {history.length === 0 && <p className="empty-hint">Belum ada aktivitas transfer</p>}
           {history.map((h, i) => (
             <div key={i} className={`history-card ${h.type}`}><span className="history-icon">{h.type === 'sent' ? '↑' : '↓'}</span><div><b>{h.name}</b><small>{h.type === 'sent' ? `Ke ${h.peer}` : `Dari ${h.peer}`} · {formatSize(h.size)} · {formatTime(h.time)}</small></div></div>
