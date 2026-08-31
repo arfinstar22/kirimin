@@ -112,6 +112,7 @@ export default function App() {
   const [error, setError] = useState(null)
   const [receivedFiles, setReceivedFiles] = useState([])
   const [socketId, setSocketId] = useState(null)
+  const [accessKey, setAccessKey] = useState('')
   const [wsState, setWsState] = useState('disconnected')
   const senderPeerRef = useRef(null)
   const receiverPeerRef = useRef(null)
@@ -200,7 +201,7 @@ export default function App() {
 
     const connect = () => {
       if (!shouldReconnectRef.current) return
-      
+
       const existing = socketRef.current
       if (existing && (existing.readyState === WebSocket.CONNECTING || existing.readyState === WebSocket.OPEN)) {
         return
@@ -209,7 +210,7 @@ export default function App() {
       console.log('[ws] connecting...')
       setWsState('connecting')
 
-      const ws = new WebSocket(SIGNALING_URL)
+      const ws = new WebSocket(`${SIGNALING_URL}?key=${encodeURIComponent(accessKey)}`)
       socketRef.current = ws
       wsRef.current = ws
 
@@ -476,7 +477,7 @@ export default function App() {
       socketRef.current = null
       wsRef.current = null
     }
-  }, [joined])
+  }, [joined, accessKey])
 
   useEffect(() => {
     return () => {
@@ -684,6 +685,8 @@ export default function App() {
       <form onSubmit={join}>
         <label htmlFor="display-name">Nama Anda</label>
         <div className="login-form-row"><input id="display-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Masukkan nama Anda" maxLength="32" autoComplete="off" /><button type="submit">Mulai Berbagi <span>→</span></button></div>
+        <label htmlFor="access-key" style={{ marginTop: 12, display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--muted)', marginBottom: 4 }}>Kode Akses Ruang</label>
+        <input id="access-key" value={accessKey} onChange={(e) => setAccessKey(e.target.value)} placeholder="Masukkan kode akses ruangan..." type="password" autoComplete="off" />
       </form>
       <div className="trust-row"><span><IconCheck /> P2P langsung</span><span><IconCheck /> Tanpa upload server</span><span><IconCheck /> Gratis digunakan</span></div>
       <div className="pln-note"><span className="pln-bolt"><IconBolt /></span><span>PLN Workspace</span><span className="pln-note-sep" aria-hidden="true">·</span><span className="pln-note-sub">Berbagi berkas untuk kebutuhan kerja</span></div>

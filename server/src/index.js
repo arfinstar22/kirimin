@@ -4,6 +4,14 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
 })
 
 
+function checkAuth(request, env) {
+  const url = new URL(request.url)
+  const key = url.searchParams.get('key') || request.headers.get('x-room-key')
+  const expected = env.ROOM_KEY
+  if (!expected) return true
+  return key === expected
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
@@ -15,6 +23,10 @@ export default {
     if (url.pathname === '/ws') {
       if (request.method !== 'GET' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
         return json({ error: 'WebSocket upgrade required' }, 426)
+      }
+
+      if (!checkAuth(request, env)) {
+        return json({ error: 'Unauthorized' }, 401)
       }
 
       const id = env.SIGNALING.idFromName('default')
