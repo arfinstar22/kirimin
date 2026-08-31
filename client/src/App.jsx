@@ -252,6 +252,23 @@ export default function App() {
           const fromUser = usersRef.current.find(u => u.id === from)?.name || 'Seseorang'
 
           try {
+            if (message.type === 'answer') {
+              if (senderPeerRef.current && !senderPeerRef.current.destroyed) {
+                senderPeerRef.current.signal(signal)
+              }
+              return
+            }
+
+            if (message.type === 'ice-candidate') {
+              if (senderPeerRef.current && !senderPeerRef.current.destroyed) {
+                try { senderPeerRef.current.signal(signal) } catch { /* ignore */ }
+              }
+              if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
+                try { receiverPeerRef.current.signal(signal) } catch { /* ignore */ }
+              }
+              return
+            }
+
             if (!receiverPeerRef.current) {
               const peer = new Peer(PEER_CONFIG)
               receiverPeerRef.current = peer
