@@ -113,7 +113,8 @@ export default function App() {
   const [receivedFiles, setReceivedFiles] = useState([])
   const [socketId, setSocketId] = useState(null)
   const [wsState, setWsState] = useState('disconnected')
-  const peerRef = useRef(null)
+  const senderPeerRef = useRef(null)
+  const receiverPeerRef = useRef(null)
   const recvStateRef = useRef(null)
   const usersRef = useRef([])
   const socketRef = useRef(null)
@@ -251,28 +252,28 @@ export default function App() {
           const fromUser = usersRef.current.find(u => u.id === from)?.name || 'Seseorang'
 
           try {
-            if (!peerRef.current) {
+            if (!receiverPeerRef.current) {
               const peer = new Peer(PEER_CONFIG)
-              peerRef.current = peer
+              receiverPeerRef.current = peer
 
               peer.on('signal', (answer) => {
-                if (peerRef.current !== peer || peer.destroyed) return
+                if (receiverPeerRef.current !== peer || peer.destroyed) return
                 console.log('[peer] answering')
                 const s = socketRef.current
                 if (s && s.readyState === WebSocket.OPEN) {
-                  s.send(JSON.stringify({ type: answer.type, target: from, data: answer }))
+                  s.send(JSON.stringify({ type: answer.type || 'ice-candidate', target: from, data: answer }))
                 }
               })
 
               peer.on('connect', () => {
-                if (peerRef.current !== peer || peer.destroyed) return
+                if (receiverPeerRef.current !== peer || peer.destroyed) return
                 console.log('[peer] connected!')
                 setReceiving(r => r ? { ...r, connected: true } : r)
                 setError(null)
               })
 
               peer.on('data', (data) => {
-                if (peerRef.current !== peer || peer.destroyed) return
+                if (receiverPeerRef.current !== peer || peer.destroyed) return
                 chain = chain.then(async () => {
                   if (typeof data === 'string') {
                     try {
@@ -318,13 +319,17 @@ export default function App() {
                       recvStateRef.current.chunks.push(chunk)
                       recvStateRef.current.received += chunk.byteLength
                       
-                      if (recvStateRef.current.chunks.length % 50 === 0) {
-                        console.log('[file] progress:', recvStateRef.current.received, '/', recvStateRef.current.size)
-                      }
-                      
                       const elapsed = (Date.now() - recvStateRef.current.startTime) / 1000
                       recvStateRef.current.speed = elapsed > 0 ? recvStateRef.current.received / elapsed : 0
-                      setReceiving({ ...recvStateRef.current })
+
+                      const RECEIVER_PROGRESS_UPDATE_BYTES = 1024 * 1024
+                      const received = recvStateRef.current.received
+                      const size = recvStateRef.current.size
+                      const lastUpdate = recvStateRef.current.lastProgressUpdate || 0
+                      if (received - lastUpdate >= RECEIVER_PROGRESS_UPDATE_BYTES || received >= size || recvStateRef.current.complete) {
+                        recvStateRef.current.lastProgressUpdate = received
+                        setReceiving({ ...recvStateRef.current })
+                      }
 
                       if (recvStateRef.current.received >= recvStateRef.current.size && recvStateRef.current.complete) {
                         await finalizeTransfer()
@@ -346,9 +351,9 @@ export default function App() {
                 const errCode = err?.code || err?.name || 'unknown'
                 console.error('[peer] error:', errCode)
                 setError('Gagal terhubung ke penerima. Coba lagi.')
-                if (peerRef.current === peer) {
-                  peerRef.current.destroy()
-                  peerRef.current = null
+                if (receiverPeerRef.current === peer) {
+                  receiverPeerRef.current.destroy()
+                  receiverPeerRef.current = null
                 }
                 if (recvStateRef.current?.fromName === fromUser) {
                   recvStateRef.current = null
@@ -357,17 +362,17 @@ export default function App() {
               })
 
               peer.on('close', () => {
-                if (peerRef.current !== peer) return
+                if (receiverPeerRef.current !== peer) return
                 console.log('[peer] closed')
-                peerRef.current = null
+                receiverPeerRef.current = null
                 if (recvStateRef.current?.fromName === fromUser) {
                   recvStateRef.current = null
                   setReceiving(null)
                 }
               })
             }
-            if (peerRef.current && !peerRef.current.destroyed) {
-              peerRef.current.signal(signal)
+            if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
+              receiverPeerRef.current.signal(signal)
             }
           } catch (err) {
             console.error('[signal] error:', err)
@@ -424,9 +429,9 @@ export default function App() {
       audioRef.current.play().catch(() => {})
 
       setTimeout(() => {
-        if (peerRef.current) {
-          peerRef.current.destroy()
-          peerRef.current = null
+        if (receiverPeerRef.current) {
+          receiverPeerRef.current.destroy()
+          receiverPeerRef.current = null
         }
         recvStateRef.current = null
         setReceiving(null)
@@ -449,6 +454,15 @@ export default function App() {
         backpressureTimerRef.current = null
       }
       
+      if (senderPeerRef.current) {
+        senderPeerRef.current.destroy()
+        senderPeerRef.current = null
+      }
+      if (receiverPeerRef.current) {
+        receiverPeerRef.current.destroy()
+        receiverPeerRef.current = null
+      }
+
       const ws = socketRef.current
       if (ws) {
         ws.onclose = null
@@ -483,16 +497,16 @@ export default function App() {
       return
     }
 
-    if (peerRef.current) {
-      peerRef.current.destroy()
-      peerRef.current = null
+    if (senderPeerRef.current) {
+      senderPeerRef.current.destroy()
+      senderPeerRef.current = null
     }
 
     const peer = new Peer({
       ...PEER_CONFIG,
       initiator: true
     })
-    peerRef.current = peer
+    senderPeerRef.current = peer
 
     const transfer = { name: file.name, size: file.size, sent: 0, connected: false, startTime: Date.now(), speed: 0 }
     setSending(transfer)
@@ -508,16 +522,16 @@ export default function App() {
         clearTimeout(backpressureTimerRef.current)
         backpressureTimerRef.current = null
       }
-      if (peerRef.current === peer) {
+      if (senderPeerRef.current === peer) {
         peer.destroy()
-        peerRef.current = null
+        senderPeerRef.current = null
       }
       setSending(null)
       resolve(success)
     }
 
     peer.on('signal', (signal) => {
-      if (peerRef.current !== peer || peer.destroyed) return
+      if (senderPeerRef.current !== peer || peer.destroyed) return
       console.log('[peer] offering, type:', signal?.type)
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
         socketRef.current.send(JSON.stringify({ type: signal.type || 'ice-candidate', target: recipient.id, data: signal }))
@@ -525,7 +539,7 @@ export default function App() {
     })
 
     peer.on('connect', async () => {
-      if (peerRef.current !== peer || peer.destroyed) return
+      if (senderPeerRef.current !== peer || peer.destroyed) return
       console.log('[peer] connected, waiting for channel ready...')
       clearTimeout(connectTimeout)
       setSending(s => s ? { ...s, connected: true } : s)
@@ -610,14 +624,14 @@ export default function App() {
     }, 40000)
 
     peer.on('error', (err) => {
-      if (peerRef.current !== peer) return
+      if (senderPeerRef.current !== peer) return
       console.error('[peer] error:', err?.code || err?.name || 'unknown')
       setError('Gagal terhubung. Coba lagi.')
       finish(false)
     })
 
     peer.on('close', () => {
-      if (peerRef.current !== peer || settled) return
+      if (senderPeerRef.current !== peer || settled) return
       console.log('[peer] closed')
       finish(false)
     })
