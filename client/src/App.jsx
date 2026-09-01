@@ -219,6 +219,8 @@ export default function App() {
   const backpressureTimerRef = useRef(null)
   const turnServersRef = useRef([])
   const forceLogoutReceivedRef = useRef(false)
+  const profileContainerRef = useRef(null)
+  const notificationWrapRef = useRef(null)
 
   const loadReceivedFiles = useCallback(async () => {
     try {
@@ -237,6 +239,20 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
   }, [dark])
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (profileContainerRef.current && !profileContainerRef.current.contains(event.target)) {
+        setShowProfile(false)
+      }
+      if (notificationWrapRef.current && !notificationWrapRef.current.contains(event.target)) {
+        setShowNotifications(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   useEffect(() => {
     if (!joined) return
@@ -1070,7 +1086,7 @@ export default function App() {
           <span className={`dot ${wsState === 'connected' ? '' : 'pulse'}`} style={wsState !== 'connected' ? { background: '#e7a43c', boxShadow: '0 0 0 3px rgba(231,164,60,.14)' } : {}} />
           {wsState === 'connected' ? 'Terhubung' : wsState === 'connecting' || wsState === 'reconnecting' ? 'Menghubungkan...' : 'Terputus'}
         </span>
-        <div className="profile-container">
+        <div className="profile-container" ref={profileContainerRef}>
           <button className="profile-trigger" onClick={() => { setShowProfile(!showProfile); setShowNotifications(false); }}>
             <span className="name-badge">{initials(name)} <b>{name}</b></span>
           </button>
@@ -1082,7 +1098,7 @@ export default function App() {
             </div>
           )}
         </div>
-        <div className="notification-wrap">
+        <div className="notification-wrap" ref={notificationWrapRef}>
           <button className="notification-trigger" onClick={() => { setShowNotifications(!showNotifications); setShowProfile(false); }} aria-label="Notifikasi" title="Notifikasi">
             <IconBell hasNew={undownloadedCount > 0} />
             {undownloadedCount > 0 && <span className="notification-badge">{undownloadedCount > 9 ? '9+' : undownloadedCount}</span>}
