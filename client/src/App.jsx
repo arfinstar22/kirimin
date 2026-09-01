@@ -926,6 +926,25 @@ export default function App() {
     createPeerWithTimeout()
   }), [])
 
+  const handleRename = () => {
+    const newName = renameValue.trim()
+    if (!newName) {
+      setRenameError('Nama tidak boleh kosong')
+      return
+    }
+    if (newName === name) {
+      setShowRename(false)
+      setRenameValue('')
+      return
+    }
+    const s = socketRef.current
+    if (s && s.readyState === WebSocket.OPEN) {
+      s.send(JSON.stringify({ type: 'rename', name: newName }))
+    } else {
+      setRenameError('Belum terhubung ke server')
+    }
+  }
+
   const handleLogout = () => {
     // Stop reconnection attempts
     shouldReconnectRef.current = false
