@@ -208,6 +208,7 @@ export default function App() {
   const audioRef = useRef(new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAA='))
   const [showProfile, setShowProfile] = useState(false)
   const [showNotifications, setShowNotifications] = useState(false)
+  const [showDownloadPanel, setShowDownloadPanel] = useState(false)
   const [showRename, setShowRename] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [renameError, setRenameError] = useState('')
@@ -648,6 +649,7 @@ export default function App() {
           return list
         })
         loadReceivedFiles()
+        setShowDownloadPanel(true)
         setNotify({ type: 'info', message: `Berkas "${state.name}" diterima. Tersimpan di notifikasi.` })
         setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
         audioRef.current.play().catch(() => {})
@@ -1184,16 +1186,16 @@ export default function App() {
     </section>
     <footer className="site-footer"><span>Kirimin — Berbagi Berkas Langsung</span></footer>
     {notify && <div className={`toast ${notify.type}`} onClick={() => setNotify(null)}><span><IconCheck /></span>{notify.message}</div>}
-    {receivedFiles.length > 0 && (
+    {showDownloadPanel && receivedFiles.length > 0 && (
       <div className="download-panel">
-        <div className="download-panel-header"><div><span className="received-check"><IconCheck /></span><div><b>Berkas berhasil diterima</b><small>{receivedFiles.length} berkas tersedia di notifikasi</small></div></div><button onClick={() => { setShowNotifications(false); }} aria-label="Tutup panel">×</button></div>
+        <div className="download-panel-header"><div><span className="received-check"><IconCheck /></span><div><b>Berkas berhasil diterima</b><small>{receivedFiles.length} berkas tersedia di notifikasi</small></div></div><button onClick={() => { setShowDownloadPanel(false); }} aria-label="Tutup panel">×</button></div>
         {receivedFiles.map((file) => (
           <div key={file.id} className="download-item">
             <div className="download-info"><b>{file.name}</b><small>{formatSize(file.size)} · Dari: {file.sender}</small></div>
             <button className="download-btn" onClick={() => downloadFile(file)}>Download <IconDownload /></button>
           </div>
         ))}
-        <div className="download-panel-hint">Panel ini akan hilang saat halaman dimuat ulang. Berkas tetap tersimpan di IndexedDB.</div>
+        <div className="download-panel-hint">Berkas sudah tersimpan dan bisa kamu lihat kembali di notifikasi.</div>
       </div>
     )}
   </main>
