@@ -24,7 +24,7 @@ function useMediaQuery(q) {
 
 const PEER_CONFIG = {
   initiator: false,
-  trickle: import.meta.env.DEV ? true : false,
+  trickle: true,
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
