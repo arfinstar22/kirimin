@@ -93,9 +93,6 @@ function IconMoon() {
 function IconSun() {
   return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3.5" stroke="currentColor" strokeWidth="1.8" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
 }
-function IconBolt() {
-  return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg>
-}
 function IconRefresh() {
   return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M23 4v6h-6M1 20v-6h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
 }
@@ -113,18 +110,6 @@ function ThemeToggle({ dark, onClick }) {
 }
 function RefreshButton() {
   return <button className="theme-toggle" onClick={() => window.location.reload()} aria-label="Refresh aplikasi" title="Refresh aplikasi"><IconRefresh /></button>
-}
-const PLN_LOGO_SRCS = ['/pln-mobile-logo.svg', '/pln-mobile-logo.png']
-function PlnBadge({ label = 'PLN Mobile' }) {
-  const [srcIdx, setSrcIdx] = useState(0)
-  if (srcIdx >= PLN_LOGO_SRCS.length) {
-    return <span className="pln-badge pln-badge-text">{label}</span>
-  }
-  return (
-    <span className="pln-badge">
-      <img src={PLN_LOGO_SRCS[srcIdx]} alt={label} className="pln-logo" onError={() => setSrcIdx(i => i + 1)} />
-    </span>
-  )
 }
 function initials(value) {
   return value.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase()
@@ -761,7 +746,7 @@ export default function App() {
   const onDragOver = useCallback((e) => e.preventDefault(), [])
 
   if (!joined) return <main className={`login ${dark ? 'dark' : ''}`}>
-    <header className="login-header"><div className="brand-group"><Logo dark={dark} /><span className="pln-separator" aria-hidden="true" /><PlnBadge label="PLN Mobile" /></div><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></header>
+    <header className="login-header"><div className="brand-group"><Logo dark={dark} /></div><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></header>
     <div className="login-shell">
       <div className="login-kicker"><span className="kicker-dot" /> Berbagi langsung, lebih sederhana</div>
       <h1>Kirim berkas<br /><em>tanpa perantara.</em></h1>
@@ -771,10 +756,9 @@ export default function App() {
         <div className="login-form-row"><input id="display-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Masukkan nama Anda" maxLength="32" autoComplete="off" /><button type="submit">Mulai Berbagi <span>→</span></button></div>
       </form>
       <div className="trust-row"><span><IconCheck /> P2P langsung</span><span><IconCheck /> Tanpa upload server</span><span><IconCheck /> Gratis digunakan</span></div>
-      <div className="pln-note"><span className="pln-bolt"><IconBolt /></span><span>PLN Workspace</span><span className="pln-note-sep" aria-hidden="true">·</span><span className="pln-note-sub">Berbagi berkas untuk kebutuhan kerja</span></div>
     </div>
     <div className="login-orbit orbit-one" /><div className="login-orbit orbit-two" />
-    <footer className="site-footer"><span>Kirimin — Berbagi Berkas Langsung</span><span className="pln-foot"><span className="pln-bolt"><IconBolt /></span>PLN Workspace</span></footer>
+    <footer className="site-footer"><span>Kirimin — Berbagi Berkas Langsung</span></footer>
   </main>
 
   const sentPercent = sending ? Math.min(100, Math.round((sending.sent / sending.size) * 100)) : 0
@@ -786,7 +770,7 @@ export default function App() {
 
   return <main className={`app ${dark ? 'dark' : ''}`}>
     <header>
-       <div className="brand-wrap"><Logo dark={dark} /><span className="pln-separator" aria-hidden="true" /><PlnBadge label="PLN Workspace" /></div>
+       <div className="brand-wrap"><Logo dark={dark} /></div>
       <div className="profile">
         <span className="connection-status">
           <span className={`dot ${wsState === 'connected' ? '' : 'pulse'}`} style={wsState !== 'connected' ? { background: '#e7a43c', boxShadow: '0 0 0 3px rgba(231,164,60,.14)' } : {}} />
@@ -825,7 +809,6 @@ export default function App() {
     )}
     <section className="layout">
       <aside>
-        <div className="pln-context"><span className="pln-bolt"><IconBolt /></span><span>PLN Internal · Workspace</span></div>
         <div className="sidebar-section">
           <div className="sidebar-title"><span>Pengguna Online</span><b>{users.length}</b></div>
           {users.length === 0 && <p className="empty-hint">Menunggu pengguna lain bergabung…</p>}
@@ -861,7 +844,7 @@ export default function App() {
         )}
       </article>
     </section>
-    <footer className="site-footer"><span>Kirimin — Berbagi Berkas Langsung</span><span className="pln-foot"><span className="pln-bolt"><IconBolt /></span>PLN Workspace</span></footer>
+    <footer className="site-footer"><span>Kirimin — Berbagi Berkas Langsung</span></footer>
     {notify && <div className={`toast ${notify.type}`} onClick={() => setNotify(null)}><span><IconCheck /></span>{notify.message}</div>}
     {receivedFiles.length > 0 && <div className="download-panel"><div className="download-panel-header"><div><span className="received-check"><IconCheck /></span><div><b>Berkas berhasil diterima</b><small>{receivedFiles.length} berkas siap diunduh</small></div></div><button onClick={() => { urlCacheRef.current.forEach(URL.revokeObjectURL); urlCacheRef.current = []; setReceivedFiles([]) }} aria-label="Tutup daftar">×</button></div>{receivedFiles.map((file, idx) => <div key={idx} className="download-item"><div className="download-info"><b>{file.name}</b><small>{formatSize(file.size)}</small></div><a href={file.url} download={file.name} className="download-btn">Download <IconDownload /></a></div>)}</div>}
   </main>
