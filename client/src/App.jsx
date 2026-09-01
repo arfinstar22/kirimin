@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import Peer from 'simple-peer-light'
 import './index.css'
+import { saveReceivedFile, getAllReceivedFiles, getReceivedFile, markDownloaded, deleteReceivedFile } from './storage/fileStore'
 
 const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'wss://kirimin-signaling.darfinstar.workers.dev/ws'
 
@@ -33,30 +34,61 @@ const PEER_CONFIG = {
     ]
   }
 }
+const MAX_PEER_RETRIES = 1
+const PEER_CONNECT_TIMEOUT = 40000
 
-function attachIceDiagnostics(peer) {
+async function logIceStats(peer, label) {
+  if (!import.meta.env.DEV) return
+  const pc = peer?._pc
+  if (!pc) return
+  try {
+    const stats = await pc.getStats()
+    let pairFound = false
+    stats.forEach(report => {
+      if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+        pairFound = true
+        const local = stats.get(report.localCandidateId)
+        const remote = stats.get(report.remoteCandidateId)
+        console.log(`[ICE STATS] ${label}: pair state=${report.state} protocol=${report.protocol || 'udp'} local=${local?.candidateType || 'unknown'} remote=${remote?.candidateType || 'unknown'}`)
+      }
+    })
+    if (!pairFound) {
+      console.log(`[ICE STATS] ${label}: no successful candidate pair found`)
+    }
+  } catch(e) {
+    console.error(`[ICE STATS] ${label}: failed to get stats`, e)
+  }
+}
+
+function attachIceDiagnostics(peer, role) {
   if (!import.meta.env.DEV) return
   try {
     const pc = peer._pc
     if (!pc) return
     pc.addEventListener('icegatheringstatechange', () => {
-      console.log(`[ICE] gathering: ${pc.iceGatheringState}`)
+      console.log(`[ICE] ${role} gathering: ${pc.iceGatheringState}`)
     })
     pc.addEventListener('iceconnectionstatechange', () => {
-      console.log(`[ICE] connection: ${pc.iceConnectionState}`)
+      console.log(`[ICE] ${role} connection: ${pc.iceConnectionState}`)
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        logIceStats(peer, role)
+      }
     })
     if (typeof pc.connectionState === 'string') {
       pc.addEventListener('connectionstatechange', () => {
-        console.log(`[ICE] connection-state: ${pc.connectionState}`)
+        console.log(`[ICE] ${role} connection-state: ${pc.connectionState}`)
+        if (pc.connectionState === 'connected' || pc.connectionState === 'completed') {
+          logIceStats(peer, role)
+        }
       })
     }
     pc.addEventListener('icecandidateerror', (e) => {
-      console.log(`[ICE] candidate-error: host=${e.hostCandidate ?? ''} url=${e.url ?? ''} code=${e.errorCode ?? ''} text=${e.errorText ?? ''}`)
+      console.log(`[ICE] ${role} candidate-error: host=${e.hostCandidate ?? ''} url=${e.url ?? ''} code=${e.errorCode ?? ''} text=${e.errorText ?? ''}`)
     })
     pc.addEventListener('icecandidate', (e) => {
       if (!e.candidate) return
       const type = e.candidate.type === 'srflx' ? 'srflx' : e.candidate.type === 'relay' ? 'relay' : (e.candidate.address?.includes('.local') ? 'mdns/host' : e.candidate.type || 'host')
-      console.log(`[ICE] candidate: ${type}`)
+      console.log(`[ICE] ${role} candidate: ${type}`)
     })
   } catch {
     /* diagnostics best-effort */
@@ -96,6 +128,13 @@ function IconSun() {
 function IconRefresh() {
   return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M23 4v6h-6M1 20v-6h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
 }
+function IconBell({ hasNew }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 22c1.1 0 2-.9 2-2H10c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v1.68C8.63 10.36 7 12.92 7 16v6h14zm-2 0H9v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill={hasNew ? 'currentColor' : 'none'}/>
+    </svg>
+  )
+}
 function Logo({ dark }) {
   return (
     <img
@@ -117,12 +156,28 @@ function initials(value) {
 function formatTime(time) {
   return new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit' }).format(time)
 }
+function formatRelativeTime(epoch) {
+  const now = Date.now()
+  const diff = now - epoch
+  const sec = Math.floor(diff / 1000)
+  if (sec < 60) return 'Baru diterima'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min} menit lalu`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `${h} jam lalu`
+  const d = Math.floor(h / 24)
+  return `${d} hari lalu`
+}
 
 export default function App() {
   const prefersDark = useMediaQuery('(prefers-color-scheme: dark)')
   const [dark, setDark] = useState(prefersDark)
-  const [name, setName] = useState(() => localStorage.getItem('kirimin_username') || '')
-  const [joined, setJoined] = useState(() => Boolean(localStorage.getItem('kirimin_username')?.trim()))
+  const savedName = typeof window !== 'undefined' ? sessionStorage.getItem('kirimin_username') : null
+  const isAuthenticated = typeof window !== 'undefined' ? sessionStorage.getItem('kirimin_authenticated') === 'true' : false
+  const [name, setName] = useState(savedName || '')
+  const [pin, setPin] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [joined, setJoined] = useState(isAuthenticated && !!savedName)
   const [users, setUsers] = useState([])
   const [selected, setSelected] = useState(null)
   const [sending, setSending] = useState(null)
@@ -151,6 +206,7 @@ export default function App() {
   const urlCacheRef = useRef([])
   const audioRef = useRef(new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAA='))
   const [showProfile, setShowProfile] = useState(false)
+  const [showNotifications, setShowNotifications] = useState(false)
   const [showRename, setShowRename] = useState(false)
   const [renameValue, setRenameValue] = useState('')
   const [renameError, setRenameError] = useState('')
@@ -160,6 +216,41 @@ export default function App() {
   const nameRef = useRef(name)
   const socketIdRef = useRef(socketId)
   const backpressureTimerRef = useRef(null)
+  const turnServersRef = useRef([])
+  const forceLogoutReceivedRef = useRef(false)
+
+  const loadReceivedFiles = useCallback(async () => {
+    try {
+      const files = await getAllReceivedFiles()
+      const sorted = [...files].sort((a, b) => b.receivedAt - a.receivedAt)
+      setReceivedFiles(sorted)
+    } catch (err) {
+      if (import.meta.env.DEV) console.error('[store] failed to load received files:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadReceivedFiles()
+  }, [loadReceivedFiles])
+
+  useEffect(() => {
+    if (!joined) return
+
+    const fetchTurn = async () => {
+      try {
+        const turnUrl = SIGNALING_URL.replace('wss://', 'https://').replace('ws://', 'http://').replace(/\/ws$/, '')
+        const turnRes = await fetch(`${turnUrl}/turn`, { method: 'POST' })
+        if (turnRes.ok) {
+          const data = await turnRes.json()
+          if (data && data.iceServers) turnServersRef.current = [data.iceServers]
+        }
+        // 501 / failure: TURN unavailable — app stays online, STUN/direct P2P used
+      } catch (err) {
+        if (import.meta.env.DEV) console.error('[turn] TURN tidak tersedia, fallback ke STUN/direct:', err)
+      }
+    }
+    fetchTurn()
+  }, [joined])
 
   useEffect(() => {
     nameRef.current = name
@@ -170,40 +261,27 @@ export default function App() {
   }, [socketId])
 
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', dark)
-  }, [dark])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('kirimin_transfer_history', JSON.stringify(history))
-    } catch {
-      /* history persistence is best-effort; ignore quota/serialization errors */
-    }
-  }, [history])
-
-  useEffect(() => {
-    if (!notify) return
-    const timer = setTimeout(() => setNotify(null), 1000)
-    return () => clearTimeout(timer)
-  }, [notify])
-
-  useEffect(() => {
-    usersRef.current = users
-  }, [users])
-
-  useEffect(() => {
     if (!joined) return
 
     const MAX_RECONNECT_DELAY = 30000
     const BASE_DELAY = 1000
+    let receiverConnectTimeout = null
+    let receiverRetryCount = 0
+
+    const clearReceiverConnectTimeout = () => {
+      if (receiverConnectTimeout) {
+        clearTimeout(receiverConnectTimeout)
+        receiverConnectTimeout = null
+      }
+    }
 
     const scheduleReconnect = () => {
       if (!shouldReconnectRef.current) return
-      
+
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
       }
-      
+
       const attempt = reconnectAttemptRef.current
       const delay = Math.min(BASE_DELAY * Math.pow(2, attempt), MAX_RECONNECT_DELAY)
       const jitter = Math.random() * 200
@@ -211,7 +289,7 @@ export default function App() {
 
       if (import.meta.env.DEV) console.log(`[ws] reconnect scheduled in ${Math.round(finalDelay)}ms (attempt ${attempt + 1})`)
       setWsState('reconnecting')
-      
+
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null
         reconnectAttemptRef.current += 1
@@ -222,10 +300,10 @@ export default function App() {
     const handleSocketClosed = (ws) => {
       if (socketRef.current !== ws) return
       if (import.meta.env.DEV) console.log('[ws] closed or error, cleaning up socket')
-      
+
       socketRef.current = null
       wsRef.current = null
-      
+
       if (shouldReconnectRef.current) {
         scheduleReconnect()
       } else {
@@ -241,6 +319,8 @@ export default function App() {
         return
       }
 
+      if (forceLogoutReceivedRef.current) return
+
       if (import.meta.env.DEV) console.log('[ws] connecting...')
       setWsState('connecting')
 
@@ -253,6 +333,10 @@ export default function App() {
           ws.close()
           return
         }
+        if (forceLogoutReceivedRef.current) {
+          ws.close()
+          return
+        }
         if (import.meta.env.DEV) console.log('[ws] connected')
         reconnectAttemptRef.current = 0
         setWsState('connected')
@@ -261,7 +345,7 @@ export default function App() {
 
       ws.onmessage = (event) => {
         if (socketRef.current !== ws) return
-        
+
         let message
         try {
           message = JSON.parse(event.data)
@@ -275,7 +359,7 @@ export default function App() {
         } else if (message.type === 'users') {
           const currentSocketId = socketIdRef.current
           const currentName = nameRef.current
-          
+
           if (import.meta.env.DEV) console.log('[ws] users:', message.users.map(u => u.name))
           const myId = currentSocketId || message.users.find(u => u.name === currentName)?.id
           if (myId) setSocketId(myId)
@@ -305,9 +389,31 @@ export default function App() {
             }
 
             if (!receiverPeerRef.current) {
-              const peer = new Peer(PEER_CONFIG)
+              const peer = new Peer({
+                ...PEER_CONFIG,
+                config: {
+                  ...PEER_CONFIG.config,
+                  iceServers: [...PEER_CONFIG.config.iceServers, ...turnServersRef.current]
+                }
+              })
               receiverPeerRef.current = peer
-              attachIceDiagnostics(peer)
+              attachIceDiagnostics(peer, 'receiver')
+              const failReceiverPeer = (reason) => {
+                if (receiverPeerRef.current !== peer || peer.destroyed) return
+                clearReceiverConnectTimeout()
+                receiverPeerRef.current = null
+                peer.destroy()
+                if (receiverRetryCount < MAX_PEER_RETRIES && !recvStateRef.current) {
+                  receiverRetryCount += 1
+                  if (import.meta.env.DEV) console.warn(`[peer] receiver retry ${receiverRetryCount}:`, reason)
+                  return
+                }
+                setError('Koneksi perangkat gagal. Silakan coba lagi.')
+                if (recvStateRef.current?.fromName === fromUser) {
+                  recvStateRef.current = null
+                  setReceiving(null)
+                }
+              }
 
               peer.on('signal', (answer) => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
@@ -320,6 +426,7 @@ export default function App() {
 
               peer.on('connect', () => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
+                clearReceiverConnectTimeout()
                 if (import.meta.env.DEV) console.log('[peer] connected!')
                 setReceiving(r => r ? { ...r, connected: true } : r)
                 setError(null)
@@ -371,7 +478,7 @@ export default function App() {
                     if (recvStateRef.current) {
                       recvStateRef.current.chunks.push(chunk)
                       recvStateRef.current.received += chunk.byteLength
-                      
+
                       const elapsed = (Date.now() - recvStateRef.current.startTime) / 1000
                       recvStateRef.current.speed = elapsed > 0 ? recvStateRef.current.received / elapsed : 0
 
@@ -404,6 +511,10 @@ export default function App() {
                 const errCode = err?.code || err?.name || 'unknown'
                 if (import.meta.env.DEV) console.error('[peer] error:', errCode)
                 if (receiverCompleted) return
+                if (!recvStateRef.current) {
+                  failReceiverPeer(errCode)
+                  return
+                }
                 setError('Gagal terhubung ke penerima. Coba lagi.')
                 if (receiverPeerRef.current === peer) {
                   receiverPeerRef.current.destroy()
@@ -418,15 +529,26 @@ export default function App() {
               peer.on('close', () => {
                 if (receiverPeerRef.current !== peer) return
                 if (import.meta.env.DEV) console.log('[peer] closed')
+                if (!recvStateRef.current) {
+                  failReceiverPeer('close')
+                  return
+                }
                 receiverPeerRef.current = null
                 if (recvStateRef.current?.fromName === fromUser) {
                   recvStateRef.current = null
                   setReceiving(null)
                 }
               })
+
+              clearReceiverConnectTimeout()
+              receiverConnectTimeout = setTimeout(() => {
+                failReceiverPeer('timeout')
+              }, PEER_CONNECT_TIMEOUT)
             }
             if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
               receiverPeerRef.current.signal(signal)
+            } else if (!receiverPeerRef.current && !recvStateRef.current && !receiverCompleted) {
+              receiverRetryCount = 0
             }
           } catch (err) {
             if (import.meta.env.DEV) console.error('[signal] error:', err)
@@ -434,10 +556,27 @@ export default function App() {
         } else if (message.type === 'error') {
           if (import.meta.env.DEV) console.error('[ws] error:', message.message)
           setError(message.message)
+        } else if (message.type === 'force_logout') {
+          if (import.meta.env.DEV) console.log('[ws] force logout by admin')
+          forceLogoutReceivedRef.current = true
+          shouldReconnectRef.current = false
+          if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current)
+            reconnectTimerRef.current = null
+          }
+          sessionStorage.removeItem('kirimin_username')
+          sessionStorage.removeItem('kirimin_authenticated')
+          setName('')
+          setJoined(false)
+          setWsState('disconnected')
+          setUsers([])
+          setSocketId(null)
+          if (wsRef.current) {
+            wsRef.current.close(4001, 'Force logout')
+          }
         } else if (message.type === 'renamed') {
           if (import.meta.env.DEV) console.log('[ws] renamed to:', message.name)
           setName(message.name)
-          localStorage.setItem('kirimin_username', message.name)
           setShowRename(false)
         }
       }
@@ -475,23 +614,34 @@ export default function App() {
         return
       }
 
-      const url = URL.createObjectURL(blob)
-      if (import.meta.env.DEV) console.log('[file] download ready:', state.name, 'url:', url)
-      urlCacheRef.current.push(url)
-      setReceivedFiles(prev => [...prev, { name: state.name, size: state.size, url, time: Date.now() }])
-      setNotify({ type: 'success', message: `Berkas "${state.name}" diterima utuh tanpa kompresi` })
-      setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
-      audioRef.current.play().catch(() => {})
-      receiverCompleted = true
+      try {
+        await saveReceivedFile({
+          name: state.name,
+          size: state.size,
+          type: state.mime,
+          sender: state.fromName,
+          blob
+        })
+        setReceivedFiles(prev => {
+          const list = [...prev]
+          return list
+        })
+        loadReceivedFiles()
+        setNotify({ type: 'info', message: `Berkas "${state.name}" diterima. Tersimpan di notifikasi.` })
+        setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
+        audioRef.current.play().catch(() => {})
+        receiverCompleted = true
+      } catch (err) {
+        if (import.meta.env.DEV) console.error('[file] failed to save to store:', err)
+        setNotify({ type: 'error', message: `Gagal menyimpan berkas "${state.name}".` })
+      }
 
-      setTimeout(() => {
-        if (receiverPeerRef.current) {
-          receiverPeerRef.current.destroy()
-          receiverPeerRef.current = null
-        }
-        recvStateRef.current = null
-        setReceiving(null)
-      }, 1000)
+      setReceiving(null)
+      if (receiverPeerRef.current) {
+        receiverPeerRef.current.destroy()
+        receiverPeerRef.current = null
+      }
+      recvStateRef.current = null
     }
 
     shouldReconnectRef.current = true
@@ -499,17 +649,19 @@ export default function App() {
 
     return () => {
       shouldReconnectRef.current = false
-      
+
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = null
       }
-      
+
       if (backpressureTimerRef.current) {
         clearTimeout(backpressureTimerRef.current)
         backpressureTimerRef.current = null
       }
-      
+
+      clearReceiverConnectTimeout()
+
       if (senderPeerRef.current) {
         senderPeerRef.current.destroy()
         senderPeerRef.current = null
@@ -540,10 +692,34 @@ export default function App() {
     }
   }, [])
 
-  const join = (e) => {
+  const join = async (e) => {
     e.preventDefault()
     if (!name.trim()) return
-    localStorage.setItem('kirimin_username', name.trim())
+    if (!pin.trim()) {
+      setLoginError('PIN harus diisi.')
+      return
+    }
+    setLoginError('')
+    try {
+      const baseUrl = SIGNALING_URL.replace('wss://', 'https://').replace('ws://', 'http://').replace(/\/ws$/, '')
+      const loginRes = await fetch(`${baseUrl}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: pin.trim() })
+      })
+      const loginData = await loginRes.json().catch(() => null)
+      if (!loginRes.ok || !loginData?.ok) {
+        setLoginError('PIN salah. Silakan coba lagi.')
+        return
+      }
+    } catch (err) {
+      setLoginError('Tidak dapat terhubung ke server. Silakan coba lagi.')
+      return
+    }
+    forceLogoutReceivedRef.current = false
+    shouldReconnectRef.current = true
+    sessionStorage.setItem('kirimin_username', name.trim())
+    sessionStorage.setItem('kirimin_authenticated', 'true')
     setJoined(true)
   }
 
@@ -558,144 +734,191 @@ export default function App() {
       senderPeerRef.current = null
     }
 
-    const peer = new Peer({
-      ...PEER_CONFIG,
-      initiator: true
-    })
-    senderPeerRef.current = peer
-    attachIceDiagnostics(peer)
-
     const transfer = { name: file.name, size: file.size, sent: 0, connected: false, startTime: Date.now(), speed: 0 }
     setSending(transfer)
     setError(null)
 
-    let connectTimeout
+    let connectTimeout = null
+    let retryCount = 0
+    let activePeer = null
     let settled = false
+    let connected = false
     let transferDone = false
+    let transferStarted = false
+
+    const clearConnectTimeout = () => {
+      if (connectTimeout) {
+        clearTimeout(connectTimeout)
+        connectTimeout = null
+      }
+    }
+
+    const cleanupPeer = (peer) => {
+      clearConnectTimeout()
+      if (senderPeerRef.current === peer) senderPeerRef.current = null
+      if (peer && !peer.destroyed) peer.destroy()
+    }
+
     const finish = (success) => {
       if (settled) return
       settled = true
-      clearTimeout(connectTimeout)
+      clearConnectTimeout()
       if (backpressureTimerRef.current) {
         clearTimeout(backpressureTimerRef.current)
         backpressureTimerRef.current = null
       }
-      if (senderPeerRef.current === peer) {
-        peer.destroy()
-        senderPeerRef.current = null
-      }
+      if (activePeer) cleanupPeer(activePeer)
       setSending(null)
       resolve(success)
     }
 
-    peer.on('signal', (signal) => {
-      if (senderPeerRef.current !== peer || peer.destroyed) return
-      if (import.meta.env.DEV) console.log('[peer] offering, type:', signal?.type)
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        socketRef.current.send(JSON.stringify({ type: signal.type === 'candidate' ? 'ice-candidate' : (signal.type || 'ice-candidate'), target: recipient.id, data: signal }))
+    const failBeforeConnect = (peer, message) => {
+      if (senderPeerRef.current !== peer || settled || connected || transferStarted) return
+      cleanupPeer(peer)
+      if (retryCount < MAX_PEER_RETRIES) {
+        retryCount += 1
+        if (import.meta.env.DEV) console.warn(`[peer] sender retry ${retryCount}:`, message)
+        createPeerWithTimeout()
+        return
       }
-    })
+      setError('Koneksi perangkat gagal. Silakan coba lagi.')
+      finish(false)
+    }
 
-    peer.on('connect', async () => {
-      if (senderPeerRef.current !== peer || peer.destroyed) return
-      if (import.meta.env.DEV) console.log('[peer] connected, waiting for channel ready...')
-      clearTimeout(connectTimeout)
-      setSending(s => s ? { ...s, connected: true } : s)
+    const createPeerWithTimeout = () => {
+      if (settled) return
+      const peer = new Peer({
+        ...PEER_CONFIG,
+        initiator: true,
+        config: {
+          ...PEER_CONFIG.config,
+          iceServers: [...PEER_CONFIG.config.iceServers, ...turnServersRef.current]
+        }
+      })
+      activePeer = peer
+      senderPeerRef.current = peer
+      attachIceDiagnostics(peer, 'sender')
 
-      try {
-        const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
-        const checksum = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
-        const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum })
-        if (import.meta.env.DEV) console.log('[file] sending meta:', { name: file.name, size: file.size, mime: file.type })
-        peer.send(meta)
+      peer.on('signal', (signal) => {
+        if (senderPeerRef.current !== peer || peer.destroyed) return
+        if (import.meta.env.DEV) console.log('[peer] offering, type:', signal?.type)
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({ type: signal.type === 'candidate' ? 'ice-candidate' : (signal.type || 'ice-candidate'), target: recipient.id, data: signal }))
+        }
+      })
 
-        await new Promise(r => setTimeout(r, 100))
+      peer.on('connect', async () => {
+        if (senderPeerRef.current !== peer || peer.destroyed || settled) return
+        connected = true
+        clearConnectTimeout()
+        if (import.meta.env.DEV) console.log('[peer] connected, waiting for channel ready...')
+        setSending(s => s ? { ...s, connected: true } : s)
 
-        const chunkSize = 16 * 1024
-        const maxBufferedAmount = 256 * 1024
-        const PROGRESS_UPDATE_BYTES = 1024 * 1024
-        let offset = 0
-        let chunkCount = 0
-        let lastProgressUpdate = 0
-        const startTime = Date.now()
+        try {
+          const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+          const checksum = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
+          const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum })
+          if (import.meta.env.DEV) console.log('[file] sending meta:', { name: file.name, size: file.size, mime: file.type })
+          peer.send(meta)
+          transferStarted = true
 
-        const send = async () => {
-          if (!peer.connected) {
-            finish(false)
-            return
-          }
+          await new Promise(r => setTimeout(r, 100))
 
-          const bufferedAmount = peer.bufferSize
-          if (bufferedAmount > maxBufferedAmount) {
-            if (backpressureTimerRef.current) {
+          const chunkSize = 16 * 1024
+          const maxBufferedAmount = 256 * 1024
+          const PROGRESS_UPDATE_BYTES = 1024 * 1024
+          let offset = 0
+          let chunkCount = 0
+          let lastProgressUpdate = 0
+          const startTime = Date.now()
+
+          const send = async () => {
+            if (senderPeerRef.current !== peer || settled) return
+            if (!peer.connected) {
+              finish(false)
               return
             }
-            backpressureTimerRef.current = setTimeout(() => {
-              backpressureTimerRef.current = null
-              send()
-            }, 20)
-            return
+
+            const bufferedAmount = peer.bufferSize
+            if (bufferedAmount > maxBufferedAmount) {
+              if (backpressureTimerRef.current) {
+                return
+              }
+              backpressureTimerRef.current = setTimeout(() => {
+                backpressureTimerRef.current = null
+                send()
+              }, 20)
+              return
+            }
+
+            const chunk = file.slice(offset, offset + chunkSize)
+            const buffer = await chunk.arrayBuffer()
+            if (senderPeerRef.current !== peer || settled) return
+            if (!peer.connected) {
+              finish(false)
+              return
+            }
+
+            peer.send(buffer)
+            offset += buffer.byteLength
+            chunkCount += 1
+
+            if (chunkCount % 50 === 0 || offset === file.size) if (import.meta.env.DEV) console.log('[file] sent:', offset, '/', file.size)
+
+            if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
+              const elapsed = (Date.now() - startTime) / 1000
+              const speed = elapsed > 0 ? offset / elapsed : 0
+              setSending(s => s ? { ...s, sent: offset, speed } : s)
+              lastProgressUpdate = offset
+            }
+
+            if (offset < file.size) {
+              setTimeout(send, 0)
+              return
+            }
+
+            if (import.meta.env.DEV) console.log('[file] sending complete signal')
+            peer.send(JSON.stringify({ type: 'file-end' }))
+            transferDone = true
+            setHistory(h => [{ name: file.name, size: file.size, peer: recipient.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
+            setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim ke ${recipient.name}` })
+            setTimeout(() => finish(true), 2000)
           }
-
-          const chunk = file.slice(offset, offset + chunkSize)
-          const buffer = await chunk.arrayBuffer()
-          if (!peer.connected) {
-            finish(false)
-            return
-          }
-
-          peer.send(buffer)
-          offset += buffer.byteLength
-          chunkCount += 1
-
-          if (chunkCount % 50 === 0 || offset === file.size) if (import.meta.env.DEV) console.log('[file] sent:', offset, '/', file.size)
-
-          if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
-            const elapsed = (Date.now() - startTime) / 1000
-            const speed = elapsed > 0 ? offset / elapsed : 0
-            setSending(s => s ? { ...s, sent: offset, speed } : s)
-            lastProgressUpdate = offset
-          }
-
-          if (offset < file.size) {
-            setTimeout(send, 0)
-            return
-          }
-
-          if (import.meta.env.DEV) console.log('[file] sending complete signal')
-          peer.send(JSON.stringify({ type: 'file-end' }))
-          transferDone = true
-          setHistory(h => [{ name: file.name, size: file.size, peer: recipient.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
-          setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim ke ${recipient.name}` })
-          setTimeout(() => finish(true), 2000)
+          send()
+        } catch (err) {
+          if (import.meta.env.DEV) console.error('[send] error:', err)
+          setError('Gagal mengirim berkas.')
+          finish(false)
         }
-        send()
-      } catch (err) {
-        if (import.meta.env.DEV) console.error('[send] error:', err)
-        setError('Gagal mengirim berkas.')
+      })
+
+      peer.on('error', (err) => {
+        if (senderPeerRef.current !== peer || settled || transferDone) return
+        if (import.meta.env.DEV) console.error('[peer] error:', err?.code || err?.name || 'unknown')
+        if (!connected && !transferStarted) {
+          failBeforeConnect(peer, 'error')
+          return
+        }
+        setError('Gagal terhubung. Coba lagi.')
         finish(false)
-      }
-    })
+      })
 
-    connectTimeout = setTimeout(() => {
-      setError('Koneksi timeout. Pastikan penerima online dan refresh halaman.')
-      finish(false)
-    }, 40000)
+      peer.on('close', () => {
+        if (senderPeerRef.current !== peer || settled || transferDone) return
+        if (import.meta.env.DEV) console.log('[peer] closed')
+        if (!connected && !transferStarted) {
+          failBeforeConnect(peer, 'close')
+          return
+        }
+        finish(false)
+      })
 
-    peer.on('error', (err) => {
-      if (senderPeerRef.current !== peer) return
-      if (transferDone) return
-      if (import.meta.env.DEV) console.error('[peer] error:', err?.code || err?.name || 'unknown')
-      setError('Gagal terhubung. Coba lagi.')
-      finish(false)
-    })
+      connectTimeout = setTimeout(() => {
+        failBeforeConnect(peer, 'timeout')
+      }, PEER_CONNECT_TIMEOUT)
+    }
 
-
-    peer.on('close', () => {
-      if (senderPeerRef.current !== peer || settled) return
-      if (import.meta.env.DEV) console.log('[peer] closed')
-      finish(false)
-    })
+    createPeerWithTimeout()
   }), [])
 
   const handleRename = () => {
@@ -745,6 +968,42 @@ export default function App() {
   const onDrop = useCallback((e) => { e.preventDefault(); if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files) }, [handleFiles])
   const onDragOver = useCallback((e) => e.preventDefault(), [])
 
+  const downloadFile = async (file) => {
+    try {
+      const record = await getReceivedFile(file.id)
+      if (!record || !record.blob) {
+        setNotify({ type: 'error', message: 'Berkas tidak ditemukan.' })
+        return
+      }
+      const url = URL.createObjectURL(record.blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = record.name
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      await markDownloaded(record.id)
+      loadReceivedFiles()
+    } catch (err) {
+      if (import.meta.env.DEV) console.error('[file] download failed:', err)
+      setNotify({ type: 'error', message: 'Gagal mengunduh berkas.' })
+    }
+  }
+
+  const deleteFile = async (file) => {
+    if (!window.confirm(`Hapus "${file.name}" dari notifikasi?`)) return
+    try {
+      await deleteReceivedFile(file.id)
+      loadReceivedFiles()
+    } catch (err) {
+      if (import.meta.env.DEV) console.error('[file] delete failed:', err)
+      setNotify({ type: 'error', message: 'Gagal menghapus berkas.' })
+    }
+  }
+
+  const undownloadedCount = receivedFiles.filter(f => !f.downloaded).length
+
   if (!joined) return <main className={`login ${dark ? 'dark' : ''}`}>
     <header className="login-header"><div className="brand-group"><Logo dark={dark} /></div><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></header>
     <div className="login-shell">
@@ -753,7 +1012,11 @@ export default function App() {
       <p>Transfer file langsung dari browser ke browser. Cepat, aman, tanpa menyimpan file di server.</p>
       <form onSubmit={join}>
         <label htmlFor="display-name">Nama Anda</label>
-        <div className="login-form-row"><input id="display-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Masukkan nama Anda" maxLength="32" autoComplete="off" /><button type="submit">Mulai Berbagi <span>→</span></button></div>
+        <input id="display-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Masukkan nama Anda" maxLength="32" autoComplete="off" />
+        <label htmlFor="display-pin">PIN</label>
+        <input id="display-pin" type="password" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="Masukkan PIN" maxLength="8" autoComplete="off" />
+        {loginError && <div className="login-error">{loginError}</div>}
+        <button type="submit">Mulai Berbagi <span>→</span></button>
       </form>
       <div className="trust-row"><span><IconCheck /> P2P langsung</span><span><IconCheck /> Tanpa upload server</span><span><IconCheck /> Gratis digunakan</span></div>
     </div>
@@ -777,13 +1040,40 @@ export default function App() {
           {wsState === 'connected' ? 'Terhubung' : wsState === 'connecting' || wsState === 'reconnecting' ? 'Menghubungkan...' : 'Terputus'}
         </span>
         <div className="profile-container">
-          <button className="profile-trigger" onClick={() => setShowProfile(!showProfile)}>
+          <button className="profile-trigger" onClick={() => { setShowProfile(!showProfile); setShowNotifications(false); }}>
             <span className="name-badge">{initials(name)} <b>{name}</b></span>
           </button>
           {showProfile && (
             <div className="profile-dropdown">
               <div className="dropdown-info"><b>{name}</b><small><span className="dot" /> Online</small></div>
               <button className="dropdown-item" onClick={() => { setShowRename(true); setRenameValue(name); setShowProfile(false); }}><span>✏️</span> Ganti Nama</button>
+            </div>
+          )}
+        </div>
+        <div className="notification-wrap">
+          <button className="notification-trigger" onClick={() => { setShowNotifications(!showNotifications); setShowProfile(false); }} aria-label="Notifikasi" title="Notifikasi">
+            <IconBell hasNew={undownloadedCount > 0} />
+            {undownloadedCount > 0 && <span className="notification-badge">{undownloadedCount > 9 ? '9+' : undownloadedCount}</span>}
+          </button>
+          {showNotifications && receivedFiles.length > 0 && (
+            <div className="notification-dropdown">
+              <div className="notification-header"><b>Notifikasi</b><span className="notification-count">{receivedFiles.length} berkas</span></div>
+              {receivedFiles.map((file) => (
+                <div key={file.id} className="notification-item">
+                  <div className="notification-file">
+                    <span className="notif-file-icon">{file.downloaded ? '🟢' : '🔵'}</span>
+                    <div>
+                      <b>{file.name}</b>
+                      <small>Dari: {file.sender}</small>
+                      <small>{formatSize(file.size)} • {formatRelativeTime(file.receivedAt)} • {file.downloaded ? 'Sudah diunduh' : 'Belum diunduh'}</small>
+                    </div>
+                  </div>
+                  <div className="notification-actions">
+                    <button className="notif-btn download-btn" onClick={() => downloadFile(file)}>Download</button>
+                    <button className="notif-btn delete-btn" onClick={() => deleteFile(file)}>Hapus</button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -819,7 +1109,7 @@ export default function App() {
           ))}
         </div>
         <div className="sidebar-section history-section">
-          <div className="sidebar-title"><span>Riwayat Transfer</span>{history.length > 0 && <button onClick={clearHistory} className="history-clear" style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--muted)', textTransform: 'none', letterSpacing: 'normal', padding: 0 }}>Hapus Riwayat</button>}</div>
+          <div className="sidebar-title"><span>Riwayat Transfer</span>{history.length > 0 && <button onClick={clearHistory} className="history-clear" style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--muted)', textTransform: 'normal', letterSpacing: 'normal', padding: 0 }}>Hapus Riwayat</button>}</div>
           {history.length === 0 && <p className="empty-hint">Belum ada aktivitas transfer</p>}
           {history.map((h, i) => (
             <div key={i} className={`history-card ${h.type}`}><span className="history-icon">{h.type === 'sent' ? '↑' : '↓'}</span><div><b>{h.name}</b><small>{h.type === 'sent' ? `Ke ${h.peer}` : `Dari ${h.peer}`} · {formatSize(h.size)} · {formatTime(h.time)}</small></div></div>
@@ -846,6 +1136,17 @@ export default function App() {
     </section>
     <footer className="site-footer"><span>Kirimin — Berbagi Berkas Langsung</span></footer>
     {notify && <div className={`toast ${notify.type}`} onClick={() => setNotify(null)}><span><IconCheck /></span>{notify.message}</div>}
-    {receivedFiles.length > 0 && <div className="download-panel"><div className="download-panel-header"><div><span className="received-check"><IconCheck /></span><div><b>Berkas berhasil diterima</b><small>{receivedFiles.length} berkas siap diunduh</small></div></div><button onClick={() => { urlCacheRef.current.forEach(URL.revokeObjectURL); urlCacheRef.current = []; setReceivedFiles([]) }} aria-label="Tutup daftar">×</button></div>{receivedFiles.map((file, idx) => <div key={idx} className="download-item"><div className="download-info"><b>{file.name}</b><small>{formatSize(file.size)}</small></div><a href={file.url} download={file.name} className="download-btn">Download <IconDownload /></a></div>)}</div>}
+    {receivedFiles.length > 0 && (
+      <div className="download-panel">
+        <div className="download-panel-header"><div><span className="received-check"><IconCheck /></span><div><b>Berkas berhasil diterima</b><small>{receivedFiles.length} berkas tersedia di notifikasi</small></div></div><button onClick={() => { setShowNotifications(false); }} aria-label="Tutup panel">×</button></div>
+        {receivedFiles.map((file) => (
+          <div key={file.id} className="download-item">
+            <div className="download-info"><b>{file.name}</b><small>{formatSize(file.size)} · Dari: {file.sender}</small></div>
+            <button className="download-btn" onClick={() => downloadFile(file)}>Download <IconDownload /></button>
+          </div>
+        ))}
+        <div className="download-panel-hint">Panel ini akan hilang saat halaman dimuat ulang. Berkas tetap tersimpan di IndexedDB.</div>
+      </div>
+    )}
   </main>
 }

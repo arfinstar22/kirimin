@@ -1,16 +1,88 @@
-const json = (body, status = 200) => new Response(JSON.stringify(body), {
+const PIN = '0808'
+
+const json = (body, status = 200, extraHeaders = {}) => new Response(JSON.stringify(body), {
   status,
-  headers: { 'content-type': 'application/json; charset=UTF-8' }
+  headers: { 'content-type': 'application/json; charset=UTF-8', ...extraHeaders }
 })
-
-
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
 
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    }
+
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders })
+    }
+
     if (request.method === 'GET' && url.pathname === '/health') {
       return json({ ok: true })
+    }
+
+    if (request.method === 'POST' && url.pathname === '/login') {
+      try {
+        const body = await request.json()
+        if (body.pin === PIN) {
+          return json({ ok: true }, 200, corsHeaders)
+        } else {
+          return json({ ok: false, error: 'Invalid PIN' }, 401, corsHeaders)
+        }
+      } catch {
+        return json({ error: 'Invalid request' }, 400, corsHeaders)
+      }
+    }
+
+    if (request.method === 'OPTIONS' && url.pathname === '/turn') {
+      return new Response(null, {
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type'
+        }
+      })
+    }
+
+    if (url.pathname === '/reset') {
+      if (request.method !== 'POST') {
+        return json({ error: 'Method not allowed' }, 405)
+      }
+      const id = env.SIGNALING.idFromName('default')
+      return env.SIGNALING.get(id).fetch(request)
+    }
+
+    if (request.method === 'POST' && url.pathname === '/turn') {
+      try {
+        if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) {
+          return json({ error: 'TURN not configured' }, 501, { 'Access-Control-Allow-Origin': '*' })
+        }
+
+        const ttl = 86400 // 24 hours
+        const cfUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate`
+
+        const response = await fetch(cfUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${env.TURN_API_TOKEN}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ ttl })
+        })
+
+        if (!response.ok) {
+          return json({ error: 'Failed to generate TURN credentials' }, 502, { 'Access-Control-Allow-Origin': '*' })
+        }
+
+        const data = await response.json()
+        return json(data, 200, {
+          'Access-Control-Allow-Origin': '*'
+        })
+      } catch (err) {
+        return json({ error: 'Internal server error' }, 500, { 'Access-Control-Allow-Origin': '*' })
+      }
     }
 
     if (url.pathname === '/ws') {
@@ -33,6 +105,30 @@ export class SignalingRoom {
   }
 
   async fetch(request) {
+    const url = new URL(request.url)
+
+    if (url.pathname === '/reset') {
+      if (request.method !== 'POST') {
+        return json({ error: 'Method not allowed' }, 405)
+      }
+      for (const [, user] of this.sockets) {
+        try {
+          if (user.socket.readyState === WebSocket.OPEN) {
+            user.socket.send(JSON.stringify({ type: 'force_logout', reason: 'admin_reset' }))
+            user.socket.close(4001, 'Force logout by admin reset')
+          } else if (user.socket.readyState === WebSocket.CONNECTING) {
+            user.socket.close(4001, 'Force logout by admin reset')
+          }
+        } catch {
+          // socket already closed; ignore safely
+        }
+      }
+      this.users = new Map()
+      this.sockets = new Map()
+      this.broadcastUsers()
+      return json({ ok: true, reset: true })
+    }
+
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('WebSocket upgrade required', { status: 426 })
     }
