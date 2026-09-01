@@ -926,23 +926,30 @@ export default function App() {
     createPeerWithTimeout()
   }), [])
 
-  const handleRename = () => {
-    const newName = renameValue.trim()
-    if (!newName) {
-      setRenameError('Nama tidak boleh kosong')
-      return
+  const handleLogout = () => {
+    // Stop reconnection attempts
+    shouldReconnectRef.current = false
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
     }
-    if (newName === name) {
-      setShowRename(false)
-      setRenameValue('')
-      return
+    // Close WebSocket safely
+    if (wsRef.current) {
+      wsRef.current.close(4000, 'Manual logout')
     }
-    const s = socketRef.current
-    if (s && s.readyState === WebSocket.OPEN) {
-      s.send(JSON.stringify({ type: 'rename', name: newName }))
-    } else {
-      setRenameError('Belum terhubung ke server')
-    }
+    // Clear session storage
+    sessionStorage.removeItem('kirimin_username')
+    sessionStorage.removeItem('kirimin_authenticated')
+    // Reset UI and login state
+    setName('')
+    setPin('')
+    setLoginError('')
+    setJoined(false)
+    setWsState('disconnected')
+    setUsers([])
+    setSocketId(null)
+    setShowProfile(false)
+    setShowNotifications(false)
   }
 
   const clearHistory = () => {
@@ -1052,6 +1059,7 @@ export default function App() {
             <div className="profile-dropdown">
               <div className="dropdown-info"><b>{name}</b><small><span className="dot" /> Online</small></div>
               <button className="dropdown-item" onClick={() => { setShowRename(true); setRenameValue(name); setShowProfile(false); }}><span>✏️</span> Ganti Nama</button>
+              <button className="dropdown-item" onClick={handleLogout}><span>🚪</span> Logout</button>
             </div>
           )}
         </div>
