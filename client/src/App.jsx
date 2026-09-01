@@ -24,13 +24,42 @@ function useMediaQuery(q) {
 
 const PEER_CONFIG = {
   initiator: false,
-  trickle: false,
+  trickle: import.meta.env.DEV ? true : false,
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' }
     ]
+  }
+}
+
+function attachIceDiagnostics(peer) {
+  if (!import.meta.env.DEV) return
+  try {
+    const pc = peer._pc
+    if (!pc) return
+    pc.addEventListener('icegatheringstatechange', () => {
+      console.log(`[ICE] gathering: ${pc.iceGatheringState}`)
+    })
+    pc.addEventListener('iceconnectionstatechange', () => {
+      console.log(`[ICE] connection: ${pc.iceConnectionState}`)
+    })
+    if (typeof pc.connectionState === 'string') {
+      pc.addEventListener('connectionstatechange', () => {
+        console.log(`[ICE] connection-state: ${pc.connectionState}`)
+      })
+    }
+    pc.addEventListener('icecandidateerror', (e) => {
+      console.log(`[ICE] candidate-error: host=${e.hostCandidate ?? ''} url=${e.url ?? ''} code=${e.errorCode ?? ''} text=${e.errorText ?? ''}`)
+    })
+    pc.addEventListener('icecandidate', (e) => {
+      if (!e.candidate) return
+      const type = e.candidate.type === 'srflx' ? 'srflx' : e.candidate.type === 'relay' ? 'relay' : (e.candidate.address?.includes('.local') ? 'mdns/host' : e.candidate.type || 'host')
+      console.log(`[ICE] candidate: ${type}`)
+    })
+  } catch {
+    /* diagnostics best-effort */
   }
 }
 
@@ -67,6 +96,9 @@ function IconSun() {
 function IconBolt() {
   return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg>
 }
+function IconRefresh() {
+  return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M23 4v6h-6M1 20v-6h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+}
 function Logo({ dark }) {
   return (
     <img
@@ -78,6 +110,9 @@ function Logo({ dark }) {
 }
 function ThemeToggle({ dark, onClick }) {
   return <button className="theme-toggle" onClick={onClick} aria-label={dark ? 'Gunakan tema terang' : 'Gunakan tema gelap'} title={dark ? 'Gunakan tema terang' : 'Gunakan tema gelap'}>{dark ? <IconSun /> : <IconMoon />}</button>
+}
+function RefreshButton() {
+  return <button className="theme-toggle" onClick={() => window.location.reload()} aria-label="Refresh aplikasi" title="Refresh aplikasi"><IconRefresh /></button>
 }
 const PLN_LOGO_SRCS = ['/pln-mobile-logo.svg', '/pln-mobile-logo.png']
 function PlnBadge({ label = 'PLN Mobile' }) {
@@ -287,13 +322,14 @@ export default function App() {
             if (!receiverPeerRef.current) {
               const peer = new Peer(PEER_CONFIG)
               receiverPeerRef.current = peer
+              attachIceDiagnostics(peer)
 
               peer.on('signal', (answer) => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
                 if (import.meta.env.DEV) console.log('[peer] answering')
                 const s = socketRef.current
                 if (s && s.readyState === WebSocket.OPEN) {
-                  s.send(JSON.stringify({ type: answer.type || 'ice-candidate', target: from, data: answer }))
+                  s.send(JSON.stringify({ type: answer.type === 'candidate' ? 'ice-candidate' : (answer.type || 'ice-candidate'), target: from, data: answer }))
                 }
               })
 
@@ -542,6 +578,7 @@ export default function App() {
       initiator: true
     })
     senderPeerRef.current = peer
+    attachIceDiagnostics(peer)
 
     const transfer = { name: file.name, size: file.size, sent: 0, connected: false, startTime: Date.now(), speed: 0 }
     setSending(transfer)
@@ -570,7 +607,7 @@ export default function App() {
       if (senderPeerRef.current !== peer || peer.destroyed) return
       if (import.meta.env.DEV) console.log('[peer] offering, type:', signal?.type)
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        socketRef.current.send(JSON.stringify({ type: signal.type || 'ice-candidate', target: recipient.id, data: signal }))
+        socketRef.current.send(JSON.stringify({ type: signal.type === 'candidate' ? 'ice-candidate' : (signal.type || 'ice-candidate'), target: recipient.id, data: signal }))
       }
     })
 
@@ -767,6 +804,7 @@ export default function App() {
           )}
         </div>
         <ThemeToggle dark={dark} onClick={() => setDark(d => !d)} />
+        <RefreshButton />
       </div>
     </header>
     {showRename && (
