@@ -12,6 +12,13 @@ const formatSize = (bytes) => {
 }
 const formatSpeed = (bps) => `${formatSize(bps)}/s`
 
+const generateId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 function useMediaQuery(q) {
   const [m, setM] = useState(() => window.matchMedia(q).matches)
   useEffect(() => {
@@ -249,6 +256,7 @@ export default function App() {
   const profileContainerRef = useRef(null)
   const notificationWrapRef = useRef(null)
   const [chatOpen, setChatOpen] = useState(null)
+  const chatOpenRef = useRef(null)
   const [chatMessages, setChatMessages] = useState({})
   const [chatInput, setChatInput] = useState('')
   const [unreadCount, setUnreadCount] = useState({})
@@ -446,6 +454,10 @@ export default function App() {
     fetchTurn()
   }, [joined])
 
+  useEffect(() => {
+    chatOpenRef.current = chatOpen
+  }, [chatOpen])
+
   const addSystemMessage = useCallback((userId, type, fileName, fileSize) => {
     if (!userId) return
     setChatMessages(prev => {
@@ -461,6 +473,12 @@ export default function App() {
         }]
       }
     })
+    if (chatOpenRef.current !== userId) {
+      setUnreadCount(prev => ({
+        ...prev,
+        [userId]: (prev[userId] || 0) + 1
+      }))
+    }
   }, [])
 
   useEffect(() => {
@@ -572,6 +590,7 @@ export default function App() {
           const currentName = nameRef.current
 
           if (import.meta.env.DEV) console.log('[ws] users:', message.users.map(u => u.name))
+          usersRef.current = message.users || []
           const myId = currentSocketId || message.users.find(u => u.name === currentName)?.id
           if (myId) setSocketId(myId)
           setUsers(message.users.filter((u) => u.id !== (myId || currentSocketId)))
@@ -659,7 +678,7 @@ export default function App() {
             receiverPeerRef.current = peer
             receiverPeerSourceRef.current = from
             attachIceDiagnostics(peer, 'receiver')
-            const failReceiverPeer = (reason) => {
+            const failReceiverPeer = (_reason) => {
               if (receiverPeerRef.current !== peer || peer.destroyed) return
               clearReceiverConnectTimeout()
               receiverPeerRef.current = null
@@ -667,7 +686,6 @@ export default function App() {
               peer.destroy()
               if (receiverRetryCount < MAX_PEER_RETRIES && !recvStateRef.current) {
                 receiverRetryCount += 1
-                if (import.meta.env.DEV) console.warn(`[peer] receiver retry ${receiverRetryCount}:`, reason)
                 return
               }
               setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
@@ -701,15 +719,14 @@ export default function App() {
                     try {
                        const msg = JSON.parse(data)
                        if (msg.type === 'file-meta') {
-                         if (import.meta.env.DEV) console.log('[file] meta received:', msg)
-                         const pending = recvStateRef.current?.pendingChunks || []
+                          const pending = recvStateRef.current?.pendingChunks || []
                          recvStateRef.current = {
                            name: msg.name,
                            size: msg.size,
                            mime: msg.mime || 'application/octet-stream',
                            checksum: msg.checksum,
                            fromName: msg.senderName || fromUser,
-                           fromId: from,
+                           fromId: msg.senderId || from,
                            received: 0,
                            chunks: [...pending],
                            startTime: Date.now(),
@@ -724,7 +741,6 @@ export default function App() {
                          return
                        }
                       if (msg.type === 'file-end') {
-                        if (import.meta.env.DEV) console.log('[file] end signal received')
                         if (recvStateRef.current) {
                           recvStateRef.current.complete = true
                           await finalizeTransfer()
@@ -732,7 +748,6 @@ export default function App() {
                         return
                       }
                     } catch {
-                      if (import.meta.env.DEV) console.warn('[file] non-JSON string received, treating as binary')
                     }
                   }
 
@@ -758,11 +773,10 @@ export default function App() {
                         await finalizeTransfer()
                       }
                     } else {
-                      if (import.meta.env.DEV) console.log('[file] early chunk buffered:', chunk.byteLength)
                       recvStateRef.current = {
                         pendingChunks: [chunk],
                         name: null, size: null, mime: null, checksum: null,
-                        fromName: fromUser, received: chunk.byteLength, chunks: [],
+                        fromName: fromUser, fromId: from, received: chunk.byteLength, chunks: [],
                         startTime: Date.now(), speed: 0, connected: true, complete: false
                       }
                     }
@@ -885,11 +899,6 @@ export default function App() {
       if (!state || state.finalized) return
       state.finalized = true
 
-      if (import.meta.env.DEV) console.log('[file] finalizing, total:', state.received, 'expected:', state.size)
-      if (state.received < state.size) {
-        if (import.meta.env.DEV) console.warn('[file] incomplete:', state.received, '/', state.size)
-      }
-
       const blob = new Blob(state.chunks, { type: state.mime })
       state.chunks = []
       const receivedDigest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
@@ -902,7 +911,7 @@ export default function App() {
       }
 
       try {
-        await saveReceivedFile({
+        const savedRecord = await saveReceivedFile({
           name: state.name,
           size: state.size,
           type: state.mime,
@@ -910,21 +919,21 @@ export default function App() {
           blob
         })
         setReceivedFiles(prev => {
-          const list = [...prev]
-          return list
+          const next = [savedRecord, ...prev.filter(f => f.id !== savedRecord.id)]
+          return next
         })
-        loadReceivedFiles()
+        await loadReceivedFiles()
         setShowDownloadPanel(true)
         setNotify({ type: 'info', message: `Berkas "${state.name}" diterima. Tersimpan di notifikasi.` })
         setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
         audioRef.current.play().catch(() => {})
         receiverCompleted = true
 
-        if (state.fromId) {
-          addSystemMessage(state.fromId, 'received', state.name, state.size)
+        const senderId = state.fromId || receiverPeerSourceRef.current
+        if (senderId) {
+          addSystemMessage(senderId, 'received', state.name, state.size)
         }
-      } catch (err) {
-        if (import.meta.env.DEV) console.error('[file] failed to save to store:', err)
+      } catch {
         setNotify({ type: 'error', message: `Gagal menyimpan berkas "${state.name}".` })
       }
 
@@ -1108,12 +1117,11 @@ export default function App() {
       resolve(success)
     }
 
-    const failBeforeConnect = (peer, message) => {
+    const failBeforeConnect = (peer, _message) => {
       if (senderPeerRef.current !== peer || settled || connected || transferStarted) return
       cleanupPeer(peer)
       if (retryCount < MAX_PEER_RETRIES) {
         retryCount += 1
-        if (import.meta.env.DEV) console.warn(`[peer] sender retry ${retryCount}:`, message)
         createPeerWithTimeout()
         return
       }
@@ -1157,8 +1165,7 @@ export default function App() {
         try {
           const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
           const checksum = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
-          const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum, senderName: nameRef.current })
-          if (import.meta.env.DEV) console.log('[file] sending meta:', { name: file.name, size: file.size, mime: file.type })
+          const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum, senderName: nameRef.current, senderId: socketIdRef.current })
           peer.send(meta)
           transferStarted = true
 
@@ -1205,9 +1212,6 @@ export default function App() {
             offset += buffer.byteLength
             chunkCount += 1
 
-            if (chunkCount === 1 && import.meta.env.DEV) console.log('[file] first chunk sent')
-            if (chunkCount % 50 === 0 || offset === file.size) if (import.meta.env.DEV) console.log('[file] sent:', offset, '/', file.size)
-
             if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
               const elapsed = (Date.now() - startTime) / 1000
               const speed = elapsed > 0 ? offset / elapsed : 0
@@ -1222,7 +1226,6 @@ export default function App() {
               return
             }
 
-            if (import.meta.env.DEV) console.log('[file] sending complete signal')
             peer.send(JSON.stringify({ type: 'file-end' }))
             transferDone = true
             setHistory(h => [{ name: file.name, size: file.size, peer: recipient.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
@@ -1336,9 +1339,13 @@ export default function App() {
 
   const handleFiles = useCallback((files, targetRecipient = null) => {
     const recipient = targetRecipient || selected
-    if (!recipient) return
+    if (!recipient) {
+      setNotify({ type: 'info', message: 'Pilih pengguna online terlebih dahulu sebelum mengirim berkas.' })
+      return
+    }
+    if (!files || files.length === 0) return
     const newFiles = Array.from(files).map(file => ({
-      id: crypto.randomUUID(),
+      id: generateId(),
       file,
       recipient,
       name: file.name,
@@ -1355,6 +1362,24 @@ export default function App() {
     setSendingFiles(prev => [...prev, ...newFiles])
     processFileQueue()
   }, [processFileQueue, selected])
+
+  const handleMainFileSelect = useCallback((event) => {
+    const files = event.target.files
+    if (!selected) {
+      setNotify({
+        type: 'info',
+        message: 'Pilih pengguna online terlebih dahulu.'
+      })
+      event.target.value = ''
+      return
+    }
+
+    if (files && files.length) {
+      handleFiles(files, selected)
+    }
+
+    event.target.value = ''
+  }, [selected, handleFiles])
 
   const onDrop = useCallback((e) => { e.preventDefault(); if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files) }, [handleFiles])
   const onDragOver = useCallback((e) => e.preventDefault(), [])
@@ -1376,8 +1401,7 @@ export default function App() {
       setTimeout(() => URL.revokeObjectURL(url), 1000)
       await markDownloaded(record.id)
       loadReceivedFiles()
-    } catch (err) {
-      if (import.meta.env.DEV) console.error('[file] download failed:', err)
+    } catch {
       setNotify({ type: 'error', message: 'Gagal mengunduh berkas.' })
     }
   }
@@ -1387,8 +1411,7 @@ export default function App() {
     try {
       await deleteReceivedFile(file.id)
       loadReceivedFiles()
-    } catch (err) {
-      if (import.meta.env.DEV) console.error('[file] delete failed:', err)
+    } catch {
       setNotify({ type: 'error', message: 'Gagal menghapus berkas.' })
     }
   }
@@ -1404,6 +1427,7 @@ export default function App() {
       stopTyping()
     }
 
+    setSelected(user)
     setChatOpen(user.id)
     setUnreadCount(prev => ({ ...prev, [user.id]: 0 }))
   }
@@ -1446,6 +1470,23 @@ export default function App() {
 
   const chatUser = users.find(u => u.id === chatOpen)
   const currentChatMessages = chatOpen ? (chatMessages[chatOpen] || []) : []
+
+  const handleChatFileSelect = useCallback((event) => {
+    const files = event.target.files
+    if (!files || files.length === 0) return
+
+    if (!chatUser) {
+      setNotify({
+        type: 'error',
+        message: 'Penerima chat tidak tersedia.'
+      })
+      event.target.value = ''
+      return
+    }
+
+    handleFiles(files, chatUser)
+    event.target.value = ''
+  }, [chatUser, handleFiles])
 
   if (!joined) return <main className={`login ${dark ? 'dark' : ''}`}>
     <header className="login-header"><div className="brand-group"><Logo dark={dark} /></div><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></header>
@@ -1496,25 +1537,35 @@ export default function App() {
             <IconBell hasNew={undownloadedCount > 0} />
             {undownloadedCount > 0 && <span className="notification-badge">{undownloadedCount > 9 ? '9+' : undownloadedCount}</span>}
           </button>
-          {showNotifications && receivedFiles.length > 0 && (
+          {showNotifications && (
             <div className="notification-dropdown">
-              <div className="notification-header"><b>Notifikasi</b><span className="notification-count">{receivedFiles.length} berkas</span></div>
-              {receivedFiles.map((file) => (
-                <div key={file.id} className="notification-item">
-                  <div className="notification-file">
-                    <span className="notif-file-icon">{file.downloaded ? '🟢' : '🔵'}</span>
-                    <div>
-                      <b>{file.name}</b>
-                      <small>Dari: {file.sender}</small>
-                      <small>{formatSize(file.size)} • {formatRelativeTime(file.receivedAt)} • {file.downloaded ? 'Sudah diunduh' : 'Belum diunduh'}</small>
+              <div className="notification-header">
+                <b>Notifikasi</b>
+                <div className="notification-header-actions">
+                  <span className="notification-count">{receivedFiles.length} berkas</span>
+                  <button className="notif-close-btn" onClick={() => setShowNotifications(false)} aria-label="Tutup notifikasi">×</button>
+                </div>
+              </div>
+              {receivedFiles.length === 0 ? (
+                <div className="notification-empty">Belum ada berkas diterima</div>
+              ) : (
+                receivedFiles.map((file) => (
+                  <div key={file.id} className="notification-item">
+                    <div className="notification-file">
+                      <span className="notif-file-icon">{file.downloaded ? '🟢' : '🔵'}</span>
+                      <div className="notification-file-info">
+                        <b>{file.name}</b>
+                        <small>Dari: {file.sender}</small>
+                        <small>{formatSize(file.size)} • {formatRelativeTime(file.receivedAt)} • {file.downloaded ? 'Sudah diunduh' : 'Belum diunduh'}</small>
+                      </div>
+                    </div>
+                    <div className="notification-actions">
+                      <button className="notif-btn download-btn" onClick={() => downloadFile(file)}>Download</button>
+                      <button className="notif-btn delete-btn" onClick={() => deleteFile(file)}>Hapus</button>
                     </div>
                   </div>
-                  <div className="notification-actions">
-                    <button className="notif-btn download-btn" onClick={() => downloadFile(file)}>Download</button>
-                    <button className="notif-btn delete-btn" onClick={() => deleteFile(file)}>Hapus</button>
-                  </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           )}
         </div>
@@ -1575,9 +1626,32 @@ export default function App() {
         <div className="eyebrow">TRANSFER AMAN P2P</div>
         <h1>{selected ? <>Kirim ke <strong>{selected.name}</strong></> : <><span className="hero-icon"><IconCloud /></span>Pilih penerima</>}</h1>
         <p className="sub">{selected ? 'Pilih satu atau beberapa berkas dari perangkat Anda.' : 'Pilih pengguna online untuk memulai transfer berkas langsung.'}</p>
-        <label className={`dropzone ${!selected ? 'disabled' : ''}`} onDrop={onDrop} onDragOver={onDragOver}>
-          <input type="file" multiple disabled={!selected} onChange={(e) => handleFiles(e.target.files)} />
-          <div className="drop-icon"><IconArrow /></div><div className="drop-content"><b>{selected ? 'Tarik berkas ke sini' : 'Pilih penerima terlebih dahulu'}</b><span>{selected ? 'atau pilih berkas dari perangkat' : 'Daftar pengguna online ada di samping'}</span><small>Transfer langsung antar perangkat · Ukuran bebas</small></div>
+        <label
+          htmlFor="main-file-input"
+          className={`dropzone ${!selected ? 'disabled' : ''}`}
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          onClick={(e) => {
+            if (!selected) {
+              e.preventDefault()
+              setNotify({ type: 'info', message: 'Pilih pengguna online terlebih dahulu sebelum memilih berkas.' })
+            }
+          }}
+        >
+          <input
+            id="main-file-input"
+            type="file"
+            multiple
+            disabled={!selected}
+            className="main-file-input"
+            onChange={handleMainFileSelect}
+          />
+          <div className="drop-icon"><IconArrow /></div>
+          <div className="drop-content">
+            <b>{selected ? 'Tarik berkas ke sini' : 'Pilih penerima terlebih dahulu'}</b>
+            <span>{selected ? 'atau pilih berkas dari perangkat' : 'Daftar pengguna online ada di samping'}</span>
+            <small>Transfer langsung antar perangkat · Ukuran bebas</small>
+          </div>
         </label>
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError(null)} aria-label="Tutup pesan kesalahan">×</button></div>}
         {visibleProgress.length > 0 && (
@@ -1701,26 +1775,21 @@ export default function App() {
           )}
         </div>
         <div className="chat-input-container">
-          <button
-            type="button"
+          <label
+            htmlFor="chat-file-input"
             className="chat-attach-btn"
-            onClick={() => chatFileInputRef.current?.click()}
             aria-label="Kirim berkas"
             title="Kirim berkas"
           >
             📎
-          </button>
+          </label>
           <input
+            id="chat-file-input"
             ref={chatFileInputRef}
             type="file"
             multiple
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              if (e.target.files && e.target.files.length && chatUser) {
-                handleFiles(e.target.files, chatUser)
-              }
-              e.target.value = ''
-            }}
+            className="chat-file-input"
+            onChange={handleChatFileSelect}
           />
           <input
             type="text"
@@ -1753,26 +1822,26 @@ export default function App() {
     )}
     {showFileManager && (
       <div className="modal-overlay" onClick={() => setShowFileManager(false)}>
-        <div className="modal-content file-manager-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-content file-manager-modal" onClick={e => e.stopPropagation()}>
           <div className="modal-header">
             <div>
-              <h3 style={{ margin: 0 }}>Kelola Berkas</h3>
-              <small style={{ color: 'var(--muted)' }}>
+              <h3 className="file-manager-title">Kelola Berkas</h3>
+              <small className="file-manager-meta">
                 {receivedFiles.length} berkas · {formatBytes(receivedFiles.reduce((acc, f) => acc + (f.size || 0), 0))}
               </small>
             </div>
-            <button onClick={() => setShowFileManager(false)}>×</button>
+            <button onClick={() => setShowFileManager(false)} aria-label="Tutup kelola berkas">×</button>
           </div>
-          <div style={{ padding: '0 0 16px 0' }}>
+          <div className="file-manager-search-wrap">
             <input
               type="text"
               placeholder="Cari berkas..."
               value={fileSearchQuery}
               onChange={(e) => setFileSearchQuery(e.target.value)}
-              style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+              className="file-manager-search-input"
             />
           </div>
-          <div className="modal-body" style={{ overflowY: 'auto', flex: 1, padding: 0 }}>
+          <div className="modal-body file-manager-body">
             {(() => {
               const filtered = receivedFiles.filter(f =>
                 f.name.toLowerCase().includes(fileSearchQuery.toLowerCase())
@@ -1780,32 +1849,32 @@ export default function App() {
 
               if (filtered.length === 0) {
                 return (
-                  <div style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--muted)' }}>
+                  <div className="file-manager-empty">
                     {receivedFiles.length === 0 ? 'Belum ada file tersimpan' : 'Tidak ada berkas yang cocok'}
                   </div>
                 )
               }
 
               return (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div className="file-manager-list">
                   {filtered.map((file) => (
-                    <div key={file.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
-                      <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
-                        <b style={{ display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{file.name}</b>
-                        <small style={{ color: 'var(--muted)', display: 'block' }}>
+                    <div key={file.id} className="file-manager-item">
+                      <div className="file-manager-info">
+                        <b>{file.name}</b>
+                        <small>
                           {formatBytes(file.size)} · {formatDate(file.receivedAt)} · Dari: {file.sender}
                         </small>
                       </div>
-                      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                      <div className="file-manager-actions">
                         <button
                           onClick={() => handleDownloadFile(file.id)}
-                          style={{ padding: '6px 12px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+                          className="file-manager-download-btn"
                         >
                           Download
                         </button>
                         <button
                           onClick={() => handleDeleteFile(file.id)}
-                          style={{ padding: '6px 12px', background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+                          className="file-manager-delete-btn"
                         >
                           Hapus
                         </button>

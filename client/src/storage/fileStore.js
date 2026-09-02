@@ -16,13 +16,20 @@ function openDB() {
   })
 }
 
+function generateId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 export async function saveReceivedFile({ name, size, type, sender, blob }) {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
     const store = tx.objectStore(STORE_NAME)
     const record = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       name,
       size,
       type: type || 'application/octet-stream',
