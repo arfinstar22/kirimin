@@ -181,7 +181,7 @@ export default function App() {
   const [joined, setJoined] = useState(isAuthenticated && !!savedName)
   const [users, setUsers] = useState([])
   const [selected, setSelected] = useState(null)
-  const [sending, setSending] = useState(null)
+  const [sendingFiles, setSendingFiles] = useState([])
   const [receiving, setReceiving] = useState(null)
   const [history, setHistory] = useState(() => {
     try {
@@ -797,8 +797,8 @@ export default function App() {
     setJoined(true)
   }
 
-  const sendFile = useCallback((file, recipient) => new Promise((resolve) => {
-    if (!file || !recipient) {
+  const sendFile = useCallback((fileId, file, recipient) => new Promise((resolve) => {
+    if (!file || !recipient || !fileId) {
       resolve()
       return
     }
@@ -808,8 +808,9 @@ export default function App() {
       senderPeerRef.current = null
     }
 
-    const transfer = { name: file.name, size: file.size, sent: 0, connected: false, startTime: Date.now(), speed: 0 }
-    setSending(transfer)
+    setSendingFiles(prev => prev.map(f =>
+      f.id === fileId ? { ...f, status: 'connecting', startTime: Date.now() } : f
+    ))
     setError(null)
 
     let connectTimeout = null
@@ -842,7 +843,20 @@ export default function App() {
         backpressureTimerRef.current = null
       }
       if (activePeer) cleanupPeer(activePeer)
-      setSending(null)
+
+      if (success) {
+        setSendingFiles(prev => prev.map(f =>
+          f.id === fileId ? { ...f, status: 'completed', sent: f.size } : f
+        ))
+        setTimeout(() => {
+          setSendingFiles(prev => prev.filter(f => f.id !== fileId))
+        }, 2000)
+      } else {
+        setSendingFiles(prev => prev.map(f =>
+          f.id === fileId ? { ...f, status: 'failed', error: 'Transfer failed' } : f
+        ))
+      }
+
       resolve(success)
     }
 
@@ -886,7 +900,9 @@ export default function App() {
         connected = true
         clearConnectTimeout()
         if (import.meta.env.DEV) console.log('[peer] connected, waiting for channel ready...')
-        setSending(s => s ? { ...s, connected: true } : s)
+        setSendingFiles(prev => prev.map(f =>
+          f.id === fileId ? { ...f, connected: true, status: 'sending' } : f
+        ))
 
         try {
           const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
@@ -944,7 +960,9 @@ export default function App() {
             if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
               const elapsed = (Date.now() - startTime) / 1000
               const speed = elapsed > 0 ? offset / elapsed : 0
-              setSending(s => s ? { ...s, sent: offset, speed } : s)
+              setSendingFiles(prev => prev.map(f =>
+                f.id === fileId ? { ...f, sent: offset, speed } : f
+              ))
               lastProgressUpdate = offset
             }
 
@@ -995,7 +1013,7 @@ export default function App() {
     }
 
     createPeerWithTimeout()
-  }), [])
+  }), [addSystemMessage])
 
   const handleRename = () => {
     const newName = renameValue.trim()
@@ -1055,7 +1073,8 @@ export default function App() {
 
     while (fileQueueRef.current.length > 0) {
       const item = fileQueueRef.current.shift()
-      await sendFile(item.file, item.recipient)
+      await sendFile(item.id, item.file, item.recipient)
+      await new Promise(resolve => setTimeout(resolve, 100))
     }
 
     isSendingRef.current = false
@@ -1063,7 +1082,22 @@ export default function App() {
 
   const handleFiles = useCallback((files) => {
     if (!selected) return
-    fileQueueRef.current.push(...Array.from(files).map(file => ({ file, recipient: selected })))
+    const newFiles = Array.from(files).map(file => ({
+      id: crypto.randomUUID(),
+      file,
+      recipient: selected,
+      name: file.name,
+      size: file.size,
+      sent: 0,
+      connected: false,
+      status: 'queued',
+      startTime: null,
+      speed: 0,
+      error: null
+    }))
+    
+    fileQueueRef.current.push(...newFiles)
+    setSendingFiles(prev => [...prev, ...newFiles])
     processFileQueue()
   }, [processFileQueue, selected])
 
@@ -1140,6 +1174,12 @@ export default function App() {
     setChatInput('')
   }
 
+  const MAX_VISIBLE_PROGRESS = 10
+  const activeFiles = sendingFiles.filter(f => ['connecting', 'sending', 'completed'].includes(f.status))
+  const queuedFiles = sendingFiles.filter(f => f.status === 'queued')
+  const visibleProgress = activeFiles.slice(0, MAX_VISIBLE_PROGRESS)
+  const queuedCount = queuedFiles.length
+
   const chatUser = users.find(u => u.id === chatOpen)
   const currentChatMessages = chatOpen ? (chatMessages[chatOpen] || []) : []
 
@@ -1163,11 +1203,8 @@ export default function App() {
     <footer className="site-footer"><span>Kirimin — Berbagi Berkas Langsung</span></footer>
   </main>
 
-  const sentPercent = sending ? Math.min(100, Math.round((sending.sent / sending.size) * 100)) : 0
   const recvPercent = receiving ? Math.min(100, Math.round((receiving.received / receiving.size) * 100)) : 0
-  const sendSpeed = sending ? formatSpeed(sending.speed || 0) : ''
   const recvSpeed = receiving ? formatSpeed(receiving.speed || 0) : ''
-  const sendETA = (sending && sending.speed > 0 && sending.sent < sending.size) ? Math.ceil((sending.size - sending.sent) / sending.speed) + 's' : ''
   const recvETA = (receiving && receiving.speed > 0 && receiving.received < receiving.size) ? Math.ceil((receiving.size - receiving.received) / receiving.speed) + 's' : ''
 
   return <main className={`app ${dark ? 'dark' : ''}`}>
@@ -1267,11 +1304,61 @@ export default function App() {
           <div className="drop-icon"><IconArrow /></div><div className="drop-content"><b>{selected ? 'Tarik berkas ke sini' : 'Pilih penerima terlebih dahulu'}</b><span>{selected ? 'atau pilih berkas dari perangkat' : 'Daftar pengguna online ada di samping'}</span><small>Transfer langsung antar perangkat · Ukuran bebas</small></div>
         </label>
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError(null)} aria-label="Tutup pesan kesalahan">×</button></div>}
-        {(sending || receiving) && (
+        {visibleProgress.length > 0 && (
+          <div className="progress-list">
+            {visibleProgress.map(transfer => {
+              const percent = transfer.size > 0 ? Math.min(100, Math.round((transfer.sent / transfer.size) * 100)) : 0
+              const speed = transfer.speed > 0 ? formatSpeed(transfer.speed) : ''
+              const eta = transfer.speed > 0 && transfer.sent < transfer.size
+                ? Math.ceil((transfer.size - transfer.sent) / transfer.speed) + 's'
+                : ''
+
+              return (
+                <div key={transfer.id} className={`progress-card status-${transfer.status}`}>
+                  <div className="progress-head">
+                    <div className="progress-label">
+                      <span className={`dot ${transfer.connected ? 'ok' : 'pulse'}`} />
+                      <div>
+                        <span>
+                          {transfer.status === 'queued' && 'Menunggu'}
+                          {transfer.status === 'connecting' && 'Menghubungkan'}
+                          {transfer.status === 'sending' && 'Mengirim berkas'}
+                          {transfer.status === 'completed' && '✓ Selesai'}
+                          {transfer.status === 'failed' && '✗ Gagal'}
+                        </span>
+                        <b>{transfer.name}</b>
+                      </div>
+                    </div>
+                    {transfer.status === 'sending' && <strong>{percent}%</strong>}
+                    {transfer.status === 'completed' && <strong>100%</strong>}
+                  </div>
+                  {(transfer.status === 'sending' || transfer.status === 'completed') && (
+                    <>
+                      <div className="track"><div style={{ width: `${percent}%` }} /></div>
+                      <div className="progress-meta">
+                        <span>{formatSize(transfer.sent)} dari {formatSize(transfer.size)}</span>
+                        {speed && <span>{speed}</span>}
+                        {eta && <span className="eta">Sisa {eta}</span>}
+                        {transfer.connected && <span className="conn ok">Terhubung langsung</span>}
+                      </div>
+                    </>
+                  )}
+                  {transfer.status === 'failed' && transfer.error && (
+                    <div className="progress-error">{transfer.error}</div>
+                  )}
+                </div>
+              )
+            })}
+            {queuedCount > 0 && visibleProgress.length >= MAX_VISIBLE_PROGRESS && (
+              <div className="queue-indicator">+ {queuedCount} file dalam antrean</div>
+            )}
+          </div>
+        )}
+        {receiving && (
           <div className="progress-card">
-            <div className="progress-head"><div className="progress-label"><span className={`dot ${sending?.connected || receiving?.connected ? 'ok' : 'pulse'}`} /><div><span>{sending ? (sending.connected ? 'Mengirim berkas' : 'Menyiapkan koneksi') : (receiving?.connected ? 'Menerima berkas' : 'Menunggu koneksi')}</span><b>{sending?.name || receiving?.name || 'Menyiapkan transfer'}</b></div></div><strong>{sending ? sentPercent : recvPercent}%</strong></div>
-            <div className="track"><div style={{ width: `${sending ? sentPercent : recvPercent}%` }} /></div>
-            <div className="progress-meta"><span>{sending ? formatSize(sending.sent) : formatSize(receiving.received)} dari {sending ? formatSize(sending.size) : formatSize(receiving.size)}</span><span>{sending ? sendSpeed : recvSpeed}</span>{sendETA && <span className="eta">Sisa {sendETA}</span>}{recvETA && <span className="eta">Sisa {recvETA}</span>}<span className={`conn ${sending?.connected || receiving?.connected ? 'ok' : 'pulse'}`}>{sending?.connected || receiving?.connected ? 'Terhubung langsung' : 'Menghubungkan…'}</span></div>
+            <div className="progress-head"><div className="progress-label"><span className={`dot ${receiving?.connected ? 'ok' : 'pulse'}`} /><div><span>{receiving?.connected ? 'Menerima berkas' : 'Menunggu koneksi'}</span><b>{receiving?.name || 'Menyiapkan transfer'}</b></div></div><strong>{recvPercent}%</strong></div>
+            <div className="track"><div style={{ width: `${recvPercent}%` }} /></div>
+            <div className="progress-meta"><span>{formatSize(receiving.received)} dari {formatSize(receiving.size)}</span><span>{recvSpeed}</span>{recvETA && <span className="eta">Sisa {recvETA}</span>}<span className={`conn ${receiving?.connected ? 'ok' : 'pulse'}`}>{receiving?.connected ? 'Terhubung langsung' : 'Menghubungkan…'}</span></div>
           </div>
         )}
       </article>
