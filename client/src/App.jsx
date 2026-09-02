@@ -250,6 +250,7 @@ export default function App() {
   const [chatInput, setChatInput] = useState('')
   const [unreadCount, setUnreadCount] = useState({})
   const chatContainerRef = useRef(null)
+  const chatFileInputRef = useRef(null)
   const [typingUsers, setTypingUsers] = useState({})
   const typingTimerRef = useRef(null)
   const typingTimeoutsRef = useRef({})
@@ -1238,12 +1239,13 @@ export default function App() {
     isSendingRef.current = false
   }, [sendFile])
 
-  const handleFiles = useCallback((files) => {
-    if (!selected) return
+  const handleFiles = useCallback((files, targetRecipient = null) => {
+    const recipient = targetRecipient || selected
+    if (!recipient) return
     const newFiles = Array.from(files).map(file => ({
       id: crypto.randomUUID(),
       file,
-      recipient: selected,
+      recipient,
       name: file.name,
       size: file.size,
       sent: 0,
@@ -1604,6 +1606,27 @@ export default function App() {
           )}
         </div>
         <div className="chat-input-container">
+          <button
+            type="button"
+            className="chat-attach-btn"
+            onClick={() => chatFileInputRef.current?.click()}
+            aria-label="Kirim berkas"
+            title="Kirim berkas"
+          >
+            📎
+          </button>
+          <input
+            ref={chatFileInputRef}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length && chatUser) {
+                handleFiles(e.target.files, chatUser)
+              }
+              e.target.value = ''
+            }}
+          />
           <input
             type="text"
             placeholder="Tulis pesan..."
