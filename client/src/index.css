@@ -62,3 +62,40 @@
 
 @media(max-width:420px){.brand-logo{height:38px;max-width:130px}.brand-group{gap:8px}.name-badge b{max-width:60px}.profile{gap:6px}header,.login-header{padding:8px 12px}}
 @media(max-width:360px){.brand-logo{height:32px;max-width:110px}.brand-group{gap:6px}.name-badge b{max-width:45px}.profile{gap:4px}header,.login-header{padding:6px 8px}}
+
+.user-card{position:relative}
+.chat-btn{background:transparent;border:1px solid var(--border);padding:6px 10px;border-radius:8px;font-size:14px;transition:.15s;position:absolute;right:10px;opacity:0}
+.user-card:hover .chat-btn{opacity:1}
+.chat-btn:hover{background:var(--soft);border-color:var(--primary);color:var(--primary)}
+.chat-unread-badge{position:absolute;top:8px;right:52px;background:var(--primary);color:#fff;font-size:9px;font-weight:800;min-width:16px;height:16px;padding:0 5px;display:flex;align-items:center;justify-content:center;border-radius:999px;border:2px solid var(--surface)}
+
+.chat-window{position:fixed;bottom:20px;right:20px;width:380px;max-width:calc(100vw - 40px);height:520px;max-height:calc(100vh - 100px);background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);display:flex;flex-direction:column;z-index:30;animation:chatIn .25s ease}
+@keyframes chatIn{from{opacity:0;transform:translateY(20px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+.chat-header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--bg);border-radius:16px 16px 0 0}
+.chat-user-info{display:flex;align-items:center;gap:10px}
+.avatar-small{width:32px;height:32px;border-radius:50%;background:var(--soft);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0}
+.chat-user-info b{font-size:14px;display:block}
+.chat-user-info small{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:11px}
+.chat-close{background:transparent;border:none;font-size:24px;color:var(--muted);cursor:pointer;padding:0 4px;line-height:1;transition:.15s}
+.chat-close:hover{color:var(--text)}
+.chat-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.chat-empty{text-align:center;color:var(--muted);font-size:13px;margin:auto}
+.chat-message{display:flex;flex-direction:column;gap:3px}
+.chat-message.sent{align-items:flex-end}
+.chat-message.received{align-items:flex-start}
+.chat-message-content{max-width:75%;background:var(--bg);padding:8px 12px;border-radius:12px;display:flex;flex-direction:column;gap:3px}
+.chat-message.sent .chat-message-content{background:var(--primary);color:#fff;border-radius:12px 12px 2px 12px}
+.chat-message.received .chat-message-content{background:var(--bg);border-radius:12px 12px 12px 2px}
+.chat-sender{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.chat-message.sent .chat-sender{color:rgba(255,255,255,.7)}
+.chat-message-content p{margin:0;font-size:13px;line-height:1.5;word-wrap:break-word}
+.chat-time{font-size:10px;color:var(--muted);text-align:right}
+.chat-message.sent .chat-time{color:rgba(255,255,255,.65)}
+.chat-input-container{display:flex;gap:8px;padding:12px;border-top:1px solid var(--border);background:var(--bg);border-radius:0 0 16px 16px}
+.chat-input-container input{flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text);outline:0;font-size:13px}
+.chat-input-container input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--soft)}
+.chat-send-btn{background:var(--primary);color:#fff;padding:10px 16px;border:none;border-radius:10px;font-size:13px;font-weight:700;transition:.15s;flex-shrink:0}
+.chat-send-btn:hover:not(:disabled){background:var(--primary-2);transform:translateY(-1px)}
+.chat-send-btn:disabled{opacity:.4;cursor:not-allowed}
+
+@media(max-width:520px){.chat-window{bottom:10px;right:10px;left:10px;width:auto;max-width:none;height:calc(100vh - 80px)}.chat-btn{position:static;opacity:1;margin-left:auto}.chat-unread-badge{right:8px}}

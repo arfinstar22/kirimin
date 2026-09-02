@@ -186,6 +186,11 @@ export class SignalingRoom {
       return
     }
 
+    if (message.type === 'chat') {
+      this.forwardChat(user, message)
+      return
+    }
+
     this.sendError(user, 'Unknown message type')
   }
 
@@ -274,5 +279,34 @@ export class SignalingRoom {
     user.name = cleanName
     this.send(user, { type: 'renamed', name: cleanName })
     this.broadcastUsers()
+  }
+
+  forwardChat(user, message) {
+    if (!user.name) {
+      this.sendError(user, 'Register before sending chat')
+      return
+    }
+
+    if (typeof message.to !== 'string' || !message.to) {
+      return
+    }
+
+    if (typeof message.message !== 'string' || !message.message.trim()) {
+      return
+    }
+
+    const cleanMessage = message.message.trim().slice(0, 2000)
+    const recipient = this.users.get(message.to)
+    if (!recipient) {
+      return
+    }
+
+    this.send(recipient, {
+      type: 'chat',
+      from: user.id,
+      fromName: user.name,
+      message: cleanMessage,
+      timestamp: Date.now()
+    })
   }
 }

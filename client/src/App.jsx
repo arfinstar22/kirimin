@@ -222,6 +222,11 @@ export default function App() {
   const forceLogoutReceivedRef = useRef(false)
   const profileContainerRef = useRef(null)
   const notificationWrapRef = useRef(null)
+  const [chatOpen, setChatOpen] = useState(null)
+  const [chatMessages, setChatMessages] = useState({})
+  const [chatInput, setChatInput] = useState('')
+  const [unreadCount, setUnreadCount] = useState({})
+  const chatContainerRef = useRef(null)
 
   const loadReceivedFiles = useCallback(async () => {
     try {
@@ -248,6 +253,9 @@ export default function App() {
       }
       if (notificationWrapRef.current && !notificationWrapRef.current.contains(event.target)) {
         setShowNotifications(false)
+      }
+      if (chatContainerRef.current && !chatContainerRef.current.contains(event.target)) {
+        setChatOpen(null)
       }
     }
 
@@ -468,7 +476,7 @@ export default function App() {
                           size: msg.size,
                           mime: msg.mime || 'application/octet-stream',
                           checksum: msg.checksum,
-                          fromName: fromUser,
+                          fromName: msg.senderName || fromUser,
                           received: 0,
                           chunks: [...pending],
                           startTime: Date.now(),
@@ -521,7 +529,7 @@ export default function App() {
                       recvStateRef.current = {
                         pendingChunks: [chunk],
                         name: null, size: null, mime: null, checksum: null,
-                        fromName, received: chunk.byteLength, chunks: [],
+                        fromName: fromUser, received: chunk.byteLength, chunks: [],
                         startTime: Date.now(), speed: 0, connected: true, complete: false
                       }
                     }
@@ -600,6 +608,27 @@ export default function App() {
           if (import.meta.env.DEV) console.log('[ws] renamed to:', message.name)
           setName(message.name)
           setShowRename(false)
+        } else if (message.type === 'chat') {
+          if (import.meta.env.DEV) console.log('[chat] received from:', message.fromName)
+          const senderId = message.from
+          const senderName = message.fromName
+          const text = message.message
+          const timestamp = message.timestamp
+
+          setChatMessages(prev => {
+            const userMessages = prev[senderId] || []
+            return {
+              ...prev,
+              [senderId]: [...userMessages, { from: senderName, text, timestamp, fromId: senderId }]
+            }
+          })
+
+          if (chatOpen !== senderId) {
+            setUnreadCount(prev => ({
+              ...prev,
+              [senderId]: (prev[senderId] || 0) + 1
+            }))
+          }
         }
       }
 
@@ -840,7 +869,7 @@ export default function App() {
         try {
           const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
           const checksum = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
-          const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum })
+          const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum, senderName: nameRef.current })
           if (import.meta.env.DEV) console.log('[file] sending meta:', { name: file.name, size: file.size, mime: file.type })
           peer.send(meta)
           transferStarted = true
@@ -1053,6 +1082,42 @@ export default function App() {
 
   const undownloadedCount = receivedFiles.filter(f => !f.downloaded).length
 
+  const openChat = (user) => {
+    if (!user || user.id === socketId) return
+    setChatOpen(user.id)
+    setUnreadCount(prev => ({ ...prev, [user.id]: 0 }))
+  }
+
+  const sendChatMessage = () => {
+    const text = chatInput.trim()
+    if (!text || !chatOpen) return
+
+    const s = socketRef.current
+    if (!s || s.readyState !== WebSocket.OPEN) return
+
+    const recipient = users.find(u => u.id === chatOpen)
+    if (!recipient) return
+
+    s.send(JSON.stringify({
+      type: 'chat',
+      to: chatOpen,
+      message: text
+    }))
+
+    setChatMessages(prev => {
+      const userMessages = prev[chatOpen] || []
+      return {
+        ...prev,
+        [chatOpen]: [...userMessages, { from: nameRef.current, text, timestamp: Date.now(), fromId: socketIdRef.current }]
+      }
+    })
+
+    setChatInput('')
+  }
+
+  const chatUser = users.find(u => u.id === chatOpen)
+  const currentChatMessages = chatOpen ? (chatMessages[chatOpen] || []) : []
+
   if (!joined) return <main className={`login ${dark ? 'dark' : ''}`}>
     <header className="login-header"><div className="brand-group"><Logo dark={dark} /></div><ThemeToggle dark={dark} onClick={() => setDark(d => !d)} /></header>
     <div className="login-shell">
@@ -1155,6 +1220,8 @@ export default function App() {
           {users.map((u) => (
             <button key={u.id} className={`user-card ${selected?.id === u.id ? 'active' : ''}`} onClick={() => setSelected(u)}>
               <span className="avatar">{initials(u.name)}</span><span className="user-details"><b>{u.name}</b><small><span className="dot" /> Online</small></span>
+              {unreadCount[u.id] > 0 && <span className="chat-unread-badge">{unreadCount[u.id] > 9 ? '9+' : unreadCount[u.id]}</span>}
+              <button className="chat-btn" onClick={(e) => { e.stopPropagation(); openChat(u); }}>💬</button>
             </button>
           ))}
         </div>
@@ -1186,6 +1253,50 @@ export default function App() {
     </section>
     <footer className="site-footer"><span>Kirimin — Berbagi Berkas Langsung</span></footer>
     {notify && <div className={`toast ${notify.type}`} onClick={() => setNotify(null)}><span><IconCheck /></span>{notify.message}</div>}
+    {chatOpen && chatUser && (
+      <div className="chat-window" ref={chatContainerRef}>
+        <div className="chat-header">
+          <div className="chat-user-info">
+            <span className="avatar-small">{initials(chatUser.name)}</span>
+            <div>
+              <b>{chatUser.name}</b>
+              <small><span className="dot" /> Online</small>
+            </div>
+          </div>
+          <button onClick={() => setChatOpen(null)} className="chat-close">×</button>
+        </div>
+        <div className="chat-messages">
+          {currentChatMessages.length === 0 && (
+            <div className="chat-empty">Mulai percakapan dengan {chatUser.name}</div>
+          )}
+          {currentChatMessages.map((msg, i) => (
+            <div key={i} className={`chat-message ${msg.fromId === socketIdRef.current ? 'sent' : 'received'}`}>
+              <div className="chat-message-content">
+                <small className="chat-sender">{msg.from}</small>
+                <p>{msg.text}</p>
+                <small className="chat-time">{formatTime(msg.timestamp)}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="chat-input-container">
+          <input
+            type="text"
+            placeholder="Tulis pesan..."
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                sendChatMessage()
+              }
+            }}
+            autoFocus
+          />
+          <button onClick={sendChatMessage} disabled={!chatInput.trim()} className="chat-send-btn">Kirim</button>
+        </div>
+      </div>
+    )}
     {showDownloadPanel && receivedFiles.length > 0 && (
       <div className="download-panel">
         <div className="download-panel-header"><div><span className="received-check"><IconCheck /></span><div><b>Berkas berhasil diterima</b><small>{receivedFiles.length} berkas tersedia di notifikasi</small></div></div><button onClick={() => { setShowDownloadPanel(false); }} aria-label="Tutup panel">×</button></div>
