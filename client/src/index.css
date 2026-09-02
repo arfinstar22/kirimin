@@ -28,6 +28,11 @@
 .conn.ok:before{background:var(--success)}
 .pulse:before{background:#e7a43c;animation:pulse 1.2s infinite}
 @keyframes pulse{50%{opacity:.3}}
+.typing-indicator{display:flex;align-items:center;gap:8px;padding:8px 12px;color:var(--muted);font-size:12px;font-style:italic}
+.typing-dot{width:4px;height:4px;background:var(--muted);border-radius:50%;animation:typing-dot .6s infinite alternate}
+.typing-dot:nth-child(2){animation-delay:.2s}
+.typing-dot:nth-child(3){animation-delay:.4s}
+@keyframes typing-dot{from{opacity:.3}to{opacity:1}}
 .error-banner{display:flex;justify-content:space-between;gap:12px;margin-top:16px;padding:12px 15px;color:var(--danger);background:rgba(217,74,91,.1);border:1px solid rgba(217,74,91,.3);border-radius:11px;font-size:13px}
 .error-banner button,.download-panel-header>button{border:0;background:transparent;color:inherit;font-size:18px;padding:0}
 .toast{position:fixed;right:24px;bottom:24px;z-index:30;display:flex;align-items:center;gap:10px;max-width:360px;padding:14px 17px;color:#fff;background:var(--success);border-radius:12px;box-shadow:var(--shadow);font-size:13px;font-weight:650;animation:up .25s ease}

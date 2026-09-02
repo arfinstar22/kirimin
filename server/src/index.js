@@ -191,6 +191,23 @@ export class SignalingRoom {
       return
     }
 
+    if (message.type === 'typing') {
+      if (typeof message.to !== 'string' || typeof message.isTyping !== 'boolean') {
+        this.sendError(user, 'Invalid typing payload')
+        return
+      }
+      const recipient = this.users.get(message.to)
+      if (recipient) {
+        this.send(recipient, {
+          type: 'typing',
+          from: user.id,
+          fromName: user.name,
+          isTyping: message.isTyping
+        })
+      }
+      return
+    }
+
     this.sendError(user, 'Unknown message type')
   }
 

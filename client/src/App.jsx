@@ -227,6 +227,58 @@ export default function App() {
   const [chatInput, setChatInput] = useState('')
   const [unreadCount, setUnreadCount] = useState({})
   const chatContainerRef = useRef(null)
+  const [typingUsers, setTypingUsers] = useState({})
+  const typingTimerRef = useRef(null)
+  const typingTimeoutsRef = useRef({})
+  const typingStateRef = useRef({ active: false, recipientId: null })
+
+  const sendTypingEvent = useCallback((isTyping, recipientId = null) => {
+    const targetId = recipientId || chatOpen
+    if (!targetId) return
+    const s = socketRef.current
+    if (!s || s.readyState !== WebSocket.OPEN) return
+    s.send(JSON.stringify({
+      type: 'typing',
+      to: targetId,
+      isTyping
+    }))
+  }, [chatOpen])
+
+  const stopTyping = useCallback(() => {
+    const state = typingStateRef.current
+    if (!state.active) return
+    const targetId = state.recipientId
+    sendTypingEvent(false, targetId)
+    state.active = false
+    state.recipientId = null
+    if (typingTimerRef.current) {
+      clearTimeout(typingTimerRef.current)
+      typingTimerRef.current = null
+    }
+  }, [sendTypingEvent])
+
+  const handleChatInput = useCallback((e) => {
+    const value = e.target.value
+    setChatInput(value)
+
+    if (!value.trim()) {
+      stopTyping()
+      return
+    }
+
+    if (!typingStateRef.current.active) {
+      typingStateRef.current.active = true
+      typingStateRef.current.recipientId = chatOpen
+      sendTypingEvent(true)
+    }
+
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+    typingTimerRef.current = setTimeout(() => {
+      stopTyping()
+    }, 1500)
+  }, [chatOpen, sendTypingEvent, stopTyping])
+
+
 
   const loadReceivedFiles = useCallback(async () => {
     try {
@@ -411,6 +463,32 @@ export default function App() {
           const myId = currentSocketId || message.users.find(u => u.name === currentName)?.id
           if (myId) setSocketId(myId)
           setUsers(message.users.filter((u) => u.id !== (myId || currentSocketId)))
+        } else if (message.type === 'typing') {
+          setTypingUsers(prev => {
+            const next = { ...prev }
+            if (message.isTyping) {
+              next[message.from] = { name: message.fromName, timestamp: Date.now() }
+              if (typingTimeoutsRef.current[message.from]) {
+                clearTimeout(typingTimeoutsRef.current[message.from])
+              }
+              typingTimeoutsRef.current[message.from] = setTimeout(() => {
+                setTypingUsers(prevUsers => {
+                  const updated = { ...prevUsers }
+                  delete updated[message.from]
+                  return updated
+                })
+                delete typingTimeoutsRef.current[message.from]
+              }, 3000)
+            } else {
+              delete next[message.from]
+              if (typingTimeoutsRef.current[message.from]) {
+                clearTimeout(typingTimeoutsRef.current[message.from])
+                delete typingTimeoutsRef.current[message.from]
+              }
+            }
+            return next
+          })
+          return
         } else if (message.type === 'offer' || message.type === 'answer' || message.type === 'ice-candidate') {
           const from = message.from
           const signal = message.data
@@ -1035,6 +1113,9 @@ export default function App() {
   }
 
   const handleLogout = () => {
+    // Stop typing before logout
+    stopTyping()
+
     // Stop reconnection attempts
     shouldReconnectRef.current = false
     if (reconnectTimerRef.current) {
@@ -1143,11 +1224,20 @@ export default function App() {
 
   const openChat = (user) => {
     if (!user || user.id === socketId) return
+
+    const prevChatId = chatOpen
+    if (prevChatId) {
+      stopTyping()
+    }
+
     setChatOpen(user.id)
     setUnreadCount(prev => ({ ...prev, [user.id]: 0 }))
   }
 
   const sendChatMessage = () => {
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current)
+    stopTyping()
+
     const text = chatInput.trim()
     if (!text || !chatOpen) return
 
@@ -1406,13 +1496,21 @@ export default function App() {
               </div>
             )
           })}
+          {chatOpen && typingUsers[chatOpen] && (
+            <div className="typing-indicator">
+              <span className="typing-dot"></span>
+              <span className="typing-dot"></span>
+              <span className="typing-dot"></span>
+              <span className="typing-text">{typingUsers[chatOpen].name} sedang mengetik.</span>
+            </div>
+          )}
         </div>
         <div className="chat-input-container">
           <input
             type="text"
             placeholder="Tulis pesan..."
             value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
+            onChange={handleChatInput}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
