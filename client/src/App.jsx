@@ -372,6 +372,45 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    let timer = null
+    let lastDate = new Date().toDateString()
+
+    const checkDateAndClear = () => {
+      const today = new Date().toDateString()
+      if (today !== lastDate) {
+        lastDate = today
+        setChatMessages({})
+      }
+    }
+
+    const scheduleMidnightCleanup = () => {
+      const now = new Date()
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1)
+      const delay = Math.max(1000, nextMidnight.getTime() - now.getTime())
+
+      timer = setTimeout(() => {
+        checkDateAndClear()
+        scheduleMidnightCleanup()
+      }, delay)
+    }
+
+    scheduleMidnightCleanup()
+
+    const handleFocusOrVisibility = () => {
+      checkDateAndClear()
+    }
+
+    window.addEventListener('focus', handleFocusOrVisibility)
+    document.addEventListener('visibilitychange', handleFocusOrVisibility)
+
+    return () => {
+      if (timer) clearTimeout(timer)
+      window.removeEventListener('focus', handleFocusOrVisibility)
+      document.removeEventListener('visibilitychange', handleFocusOrVisibility)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!joined) return
 
     const fetchTurn = async () => {
