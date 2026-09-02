@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import Peer from 'simple-peer-light'
+import { sha256Hex } from './sha256'
 import './index.css'
 import { saveReceivedFile, getAllReceivedFiles, getReceivedFile, markDownloaded, deleteReceivedFile } from './storage/fileStore'
 
@@ -901,8 +902,7 @@ export default function App() {
 
       const blob = new Blob(state.chunks, { type: state.mime })
       state.chunks = []
-      const receivedDigest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
-      const receivedChecksum = Array.from(new Uint8Array(receivedDigest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
+      const receivedChecksum = await sha256Hex(blob)
       if (state.checksum && receivedChecksum !== state.checksum) {
         setError('Berkas rusak saat transfer. Pengiriman dibatalkan.')
         recvStateRef.current = null
@@ -1163,8 +1163,7 @@ export default function App() {
         ))
 
         try {
-          const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
-          const checksum = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
+          const checksum = await sha256Hex(file)
           const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum, senderName: nameRef.current, senderId: socketIdRef.current })
           peer.send(meta)
           transferStarted = true
