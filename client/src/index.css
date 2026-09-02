@@ -83,9 +83,15 @@
 .chat-message{display:flex;flex-direction:column;gap:3px}
 .chat-message.sent{align-items:flex-end}
 .chat-message.received{align-items:flex-start}
+.chat-message.system{align-items:center}
 .chat-message-content{max-width:75%;background:var(--bg);padding:8px 12px;border-radius:12px;display:flex;flex-direction:column;gap:3px;word-break:break-word;overflow-wrap:break-word}
 .chat-message.sent .chat-message-content{background:var(--primary);color:#fff;border-radius:12px 12px 2px 12px}
 .chat-message.received .chat-message-content{background:var(--bg);border-radius:12px 12px 12px 2px}
+.chat-message.system .chat-message-content{max-width:85%;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;flex-direction:row;align-items:center;gap:10px;padding:10px 12px}
+.system-icon{font-size:20px;flex-shrink:0}
+.system-text{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.system-text b{font-size:12px;font-weight:700;color:var(--text)}
+.system-text span{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chat-sender{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
 .chat-message.sent .chat-sender{color:rgba(255,255,255,.7)}
 .chat-message-content p{margin:0;font-size:13px;line-height:1.5;word-wrap:break-word;overflow-wrap:break-word;white-space:pre-wrap}

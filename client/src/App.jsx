@@ -282,6 +282,23 @@ export default function App() {
     fetchTurn()
   }, [joined])
 
+  const addSystemMessage = useCallback((userId, type, fileName, fileSize) => {
+    if (!userId) return
+    setChatMessages(prev => {
+      const userMessages = prev[userId] || []
+      return {
+        ...prev,
+        [userId]: [...userMessages, {
+          type: 'system',
+          systemType: type,
+          fileName,
+          fileSize,
+          timestamp: Date.now()
+        }]
+      }
+    })
+  }, [])
+
   useEffect(() => {
     nameRef.current = name
   }, [name])
@@ -467,29 +484,30 @@ export default function App() {
                 chain = chain.then(async () => {
                   if (typeof data === 'string') {
                     try {
-                      const msg = JSON.parse(data)
-                      if (msg.type === 'file-meta') {
-                        if (import.meta.env.DEV) console.log('[file] meta received:', msg)
-                        const pending = recvStateRef.current?.pendingChunks || []
-                        recvStateRef.current = {
-                          name: msg.name,
-                          size: msg.size,
-                          mime: msg.mime || 'application/octet-stream',
-                          checksum: msg.checksum,
-                          fromName: msg.senderName || fromUser,
-                          received: 0,
-                          chunks: [...pending],
-                          startTime: Date.now(),
-                          speed: 0,
-                          connected: true,
-                          complete: false
-                        }
-                        pending.forEach(chunk => {
-                          recvStateRef.current.received += chunk.byteLength
-                        })
-                        setReceiving(recvStateRef.current)
-                        return
-                      }
+                       const msg = JSON.parse(data)
+                       if (msg.type === 'file-meta') {
+                         if (import.meta.env.DEV) console.log('[file] meta received:', msg)
+                         const pending = recvStateRef.current?.pendingChunks || []
+                         recvStateRef.current = {
+                           name: msg.name,
+                           size: msg.size,
+                           mime: msg.mime || 'application/octet-stream',
+                           checksum: msg.checksum,
+                           fromName: msg.senderName || fromUser,
+                           fromId: from,
+                           received: 0,
+                           chunks: [...pending],
+                           startTime: Date.now(),
+                           speed: 0,
+                           connected: true,
+                           complete: false
+                         }
+                         pending.forEach(chunk => {
+                           recvStateRef.current.received += chunk.byteLength
+                         })
+                         setReceiving(recvStateRef.current)
+                         return
+                       }
                       if (msg.type === 'file-end') {
                         if (import.meta.env.DEV) console.log('[file] end signal received')
                         if (recvStateRef.current) {
@@ -683,6 +701,10 @@ export default function App() {
         setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
         audioRef.current.play().catch(() => {})
         receiverCompleted = true
+
+        if (state.fromId) {
+          addSystemMessage(state.fromId, 'received', state.name, state.size)
+        }
       } catch (err) {
         if (import.meta.env.DEV) console.error('[file] failed to save to store:', err)
         setNotify({ type: 'error', message: `Gagal menyimpan berkas "${state.name}".` })
@@ -873,6 +895,8 @@ export default function App() {
           if (import.meta.env.DEV) console.log('[file] sending meta:', { name: file.name, size: file.size, mime: file.type })
           peer.send(meta)
           transferStarted = true
+
+          addSystemMessage(recipient.id, 'sent', file.name, file.size)
 
           await new Promise(r => setTimeout(r, 100))
 
@@ -1082,6 +1106,7 @@ export default function App() {
 
   const undownloadedCount = receivedFiles.filter(f => !f.downloaded).length
 
+
   const openChat = (user) => {
     if (!user || user.id === socketId) return
     setChatOpen(user.id)
@@ -1269,15 +1294,31 @@ export default function App() {
           {currentChatMessages.length === 0 && (
             <div className="chat-empty">Mulai percakapan dengan {chatUser.name}</div>
           )}
-          {currentChatMessages.map((msg, i) => (
-            <div key={i} className={`chat-message ${msg.fromId === socketIdRef.current ? 'sent' : 'received'}`}>
-              <div className="chat-message-content">
-                <small className="chat-sender">{msg.from}</small>
-                <p>{msg.text}</p>
-                <small className="chat-time">{formatTime(msg.timestamp)}</small>
+          {currentChatMessages.map((msg, i) => {
+            if (msg.type === 'system') {
+              return (
+                <div key={i} className="chat-message system">
+                  <div className="chat-message-content">
+                    <div className="system-icon">{msg.systemType === 'sent' ? '📎' : '📥'}</div>
+                    <div className="system-text">
+                      <b>{msg.systemType === 'sent' ? 'File dikirim' : 'File diterima'}</b>
+                      <span>{msg.fileName} · {formatSize(msg.fileSize)}</span>
+                    </div>
+                    <small className="chat-time">{formatTime(msg.timestamp)}</small>
+                  </div>
+                </div>
+              )
+            }
+            return (
+              <div key={i} className={`chat-message ${msg.fromId === socketIdRef.current ? 'sent' : 'received'}`}>
+                <div className="chat-message-content">
+                  <small className="chat-sender">{msg.from}</small>
+                  <p>{msg.text}</p>
+                  <small className="chat-time">{formatTime(msg.timestamp)}</small>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
         <div className="chat-input-container">
           <input
