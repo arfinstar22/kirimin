@@ -231,6 +231,7 @@ export default function App() {
   const typingTimerRef = useRef(null)
   const typingTimeoutsRef = useRef({})
   const typingStateRef = useRef({ active: false, recipientId: null })
+  const transferCancelRefs = useRef({})
 
   const sendTypingEvent = useCallback((isTyping, recipientId = null) => {
     const targetId = recipientId || chatOpen
@@ -875,10 +876,33 @@ export default function App() {
     setJoined(true)
   }
 
+  const cancelFile = useCallback((fileId) => {
+    const cancel = transferCancelRefs.current[fileId]
+    if (cancel) {
+      cancel()
+      delete transferCancelRefs.current[fileId]
+    }
+    setSendingFiles(prev => prev.map(f => 
+      f.id === fileId ? { ...f, status: 'cancelled' } : f
+    ))
+  }, [])
+
   const sendFile = useCallback((fileId, file, recipient) => new Promise((resolve) => {
     if (!file || !recipient || !fileId) {
       resolve()
       return
+    }
+    
+    let settled = false
+    
+    transferCancelRefs.current[fileId] = () => {
+      if (settled) return
+      settled = true
+      if (senderPeerRef.current) {
+        senderPeerRef.current.destroy()
+        senderPeerRef.current = null
+      }
+      resolve()
     }
 
     if (senderPeerRef.current) {
@@ -894,7 +918,6 @@ export default function App() {
     let connectTimeout = null
     let retryCount = 0
     let activePeer = null
-    let settled = false
     let connected = false
     let transferDone = false
     let transferStarted = false
@@ -1421,6 +1444,15 @@ export default function App() {
                     </div>
                     {transfer.status === 'sending' && <strong>{percent}%</strong>}
                     {transfer.status === 'completed' && <strong>100%</strong>}
+                    {['connecting', 'sending'].includes(transfer.status) && (
+                      <button 
+                        onClick={() => cancelFile(transfer.id)} 
+                        className="cancel-btn"
+                        style={{ fontSize: 10, padding: '2px 6px', background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
+                      >
+                        Batal
+                      </button>
+                    )}
                   </div>
                   {(transfer.status === 'sending' || transfer.status === 'completed') && (
                     <>
