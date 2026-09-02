@@ -259,7 +259,6 @@ export default function App() {
   const typingTimeoutsRef = useRef({})
   const typingStateRef = useRef({ active: false, recipientId: null })
   const transferCancelRefs = useRef({})
-  const pendingIceCandidatesRef = useRef({})
 
   const sendTypingEvent = useCallback((isTyping, recipientId = null) => {
     const targetId = recipientId || chatOpen
@@ -638,12 +637,7 @@ export default function App() {
                 try { senderPeerRef.current.signal(signal) } catch { /* ignore */ }
                 return
               }
-              if (from) {
-                if (import.meta.env.DEV) console.log('[signal] ICE queued from', from)
-                const queue = pendingIceCandidatesRef.current[from] || []
-                queue.push(signal)
-                pendingIceCandidatesRef.current[from] = queue
-              }
+              if (import.meta.env.DEV) console.log('[signal] ICE ignored: no matching peer for', from)
               return
             }
 
@@ -668,7 +662,6 @@ export default function App() {
             const failReceiverPeer = (reason) => {
               if (receiverPeerRef.current !== peer || peer.destroyed) return
               clearReceiverConnectTimeout()
-              delete pendingIceCandidatesRef.current[from]
               receiverPeerRef.current = null
               receiverPeerSourceRef.current = null
               peer.destroy()
@@ -787,7 +780,6 @@ export default function App() {
                 }
                 setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
                 clearReceiverConnectTimeout()
-                delete pendingIceCandidatesRef.current[from]
                 if (receiverPeerRef.current === peer) {
                   receiverPeerRef.current.destroy()
                   receiverPeerRef.current = null
@@ -802,7 +794,6 @@ export default function App() {
               peer.on('close', () => {
                 if (receiverPeerRef.current !== peer) return
                 if (import.meta.env.DEV) console.log('[peer] closed')
-                delete pendingIceCandidatesRef.current[from]
                 if (!recvStateRef.current) {
                   failReceiverPeer('close')
                   return
@@ -822,18 +813,6 @@ export default function App() {
 
             if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
               receiverPeerRef.current.signal(signal)
-              const pending = pendingIceCandidatesRef.current[from]
-              if (pending && pending.length > 0) {
-                if (import.meta.env.DEV) console.log('[signal] flushing', pending.length, 'pending ICE candidates from', from)
-                pending.forEach(cand => {
-                  try {
-                    if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
-                      receiverPeerRef.current.signal(cand)
-                    }
-                  } catch { /* ignore */ }
-                })
-                delete pendingIceCandidatesRef.current[from]
-              }
             } else if (!receiverPeerRef.current && !recvStateRef.current && !receiverCompleted) {
               receiverRetryCount = 0
             }
@@ -955,7 +934,6 @@ export default function App() {
         receiverPeerRef.current = null
         receiverPeerSourceRef.current = null
       }
-      delete pendingIceCandidatesRef.current[state.fromId]
       recvStateRef.current = null
     }
 
@@ -1158,19 +1136,6 @@ export default function App() {
       senderPeerRef.current = peer
       senderPeerTargetRef.current = recipient.id
       attachIceDiagnostics(peer, 'sender')
-
-      const pending = pendingIceCandidatesRef.current[recipient.id]
-      if (pending && pending.length > 0) {
-        if (import.meta.env.DEV) console.log('[signal] flushing', pending.length, 'pending ICE candidates for sender from', recipient.id)
-        pending.forEach(cand => {
-          try {
-            if (senderPeerRef.current && !senderPeerRef.current.destroyed) {
-              senderPeerRef.current.signal(cand)
-            }
-          } catch { /* ignore */ }
-        })
-        delete pendingIceCandidatesRef.current[recipient.id]
-      }
 
       peer.on('signal', (signal) => {
         if (senderPeerRef.current !== peer || peer.destroyed) return
