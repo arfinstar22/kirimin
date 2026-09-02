@@ -1221,7 +1221,7 @@ export default function App() {
             <button key={u.id} className={`user-card ${selected?.id === u.id ? 'active' : ''}`} onClick={() => setSelected(u)}>
               <span className="avatar">{initials(u.name)}</span><span className="user-details"><b>{u.name}</b><small><span className="dot" /> Online</small></span>
               {unreadCount[u.id] > 0 && <span className="chat-unread-badge">{unreadCount[u.id] > 9 ? '9+' : unreadCount[u.id]}</span>}
-              <button className="chat-btn" onClick={(e) => { e.stopPropagation(); openChat(u); }}>💬</button>
+              <span className="chat-btn" role="button" tabIndex={0} onClick={(e) => { e.stopPropagation(); openChat(u); }} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); openChat(u); } }}>💬</span>
             </button>
           ))}
         </div>
