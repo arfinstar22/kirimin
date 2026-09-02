@@ -419,7 +419,11 @@ export default function App() {
         const turnRes = await fetch(`${turnUrl}/turn`, { method: 'POST' })
         if (turnRes.ok) {
           const data = await turnRes.json()
-          if (data && data.iceServers) turnServersRef.current = [data.iceServers]
+          if (data && data.iceServers) {
+            const raw = data.iceServers
+            const normalized = Array.isArray(raw) ? raw.flat() : [raw]
+            turnServersRef.current = normalized.filter(s => s && (s.urls || s.url))
+          }
         }
         // 501 / failure: TURN unavailable — app stays online, STUN/direct P2P used
       } catch (err) {
@@ -559,30 +563,40 @@ export default function App() {
           if (myId) setSocketId(myId)
           setUsers(message.users.filter((u) => u.id !== (myId || currentSocketId)))
         } else if (message.type === 'typing') {
-          setTypingUsers(prev => {
-            const next = { ...prev }
-            if (message.isTyping) {
-              next[message.from] = { name: message.fromName, timestamp: Date.now() }
-              if (typingTimeoutsRef.current[message.from]) {
-                clearTimeout(typingTimeoutsRef.current[message.from])
+          const fromId = message.from
+          const fromName = message.fromName
+          const isTyping = message.isTyping
+
+          if (typingTimeoutsRef.current[fromId]) {
+            clearTimeout(typingTimeoutsRef.current[fromId])
+            delete typingTimeoutsRef.current[fromId]
+          }
+
+          if (isTyping) {
+            setTypingUsers(prev => ({
+              ...prev,
+              [fromId]: {
+                name: fromName,
+                timestamp: Date.now()
               }
-              typingTimeoutsRef.current[message.from] = setTimeout(() => {
-                setTypingUsers(prevUsers => {
-                  const updated = { ...prevUsers }
-                  delete updated[message.from]
-                  return updated
-                })
-                delete typingTimeoutsRef.current[message.from]
-              }, 3000)
-            } else {
-              delete next[message.from]
-              if (typingTimeoutsRef.current[message.from]) {
-                clearTimeout(typingTimeoutsRef.current[message.from])
-                delete typingTimeoutsRef.current[message.from]
-              }
-            }
-            return next
-          })
+            }))
+
+            typingTimeoutsRef.current[fromId] = setTimeout(() => {
+              setTypingUsers(prev => {
+                const next = { ...prev }
+                delete next[fromId]
+                return next
+              })
+              delete typingTimeoutsRef.current[fromId]
+            }, 3000)
+          } else {
+            setTypingUsers(prev => {
+              const next = { ...prev }
+              delete next[fromId]
+              return next
+            })
+          }
+
           return
         } else if (message.type === 'offer' || message.type === 'answer' || message.type === 'ice-candidate') {
           const from = message.from
