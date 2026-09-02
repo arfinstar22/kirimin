@@ -30,7 +30,8 @@ const PEER_CONFIG = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' }
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' }
     ]
   }
 }
@@ -220,7 +221,9 @@ export default function App() {
   const [showFileManager, setShowFileManager] = useState(false)
   const [fileSearchQuery, setFileSearchQuery] = useState('')
   const senderPeerRef = useRef(null)
+  const senderPeerTargetRef = useRef(null)
   const receiverPeerRef = useRef(null)
+  const receiverPeerSourceRef = useRef(null)
   const recvStateRef = useRef(null)
   const usersRef = useRef([])
   const socketRef = useRef(null)
@@ -256,6 +259,7 @@ export default function App() {
   const typingTimeoutsRef = useRef({})
   const typingStateRef = useRef({ active: false, recipientId: null })
   const transferCancelRefs = useRef({})
+  const pendingIceCandidatesRef = useRef({})
 
   const sendTypingEvent = useCallback((isTyping, recipientId = null) => {
     const targetId = recipientId || chatOpen
@@ -369,6 +373,16 @@ export default function App() {
 
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  useEffect(() => {
+    const preventDragDefaults = (e) => e.preventDefault()
+    window.addEventListener('dragover', preventDragDefaults)
+    window.addEventListener('drop', preventDragDefaults)
+    return () => {
+      window.removeEventListener('dragover', preventDragDefaults)
+      window.removeEventListener('drop', preventDragDefaults)
+    }
   }, [])
 
   useEffect(() => {
@@ -606,48 +620,69 @@ export default function App() {
 
           try {
             if (message.type === 'answer') {
-              if (senderPeerRef.current && !senderPeerRef.current.destroyed) {
+              if (senderPeerRef.current && !senderPeerRef.current.destroyed && senderPeerTargetRef.current === from) {
+                if (import.meta.env.DEV) console.log('[signal] answer from', from, '→ sender')
                 senderPeerRef.current.signal(signal)
               }
               return
             }
 
             if (message.type === 'ice-candidate') {
-              if (senderPeerRef.current && !senderPeerRef.current.destroyed) {
-                try { senderPeerRef.current.signal(signal) } catch { /* ignore */ }
-              }
-              if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
+              if (receiverPeerRef.current && !receiverPeerRef.current.destroyed && receiverPeerSourceRef.current === from) {
+                if (import.meta.env.DEV) console.log('[signal] ICE from', from, '→ receiver')
                 try { receiverPeerRef.current.signal(signal) } catch { /* ignore */ }
+                return
+              }
+              if (senderPeerRef.current && !senderPeerRef.current.destroyed && senderPeerTargetRef.current === from) {
+                if (import.meta.env.DEV) console.log('[signal] ICE from', from, '→ sender')
+                try { senderPeerRef.current.signal(signal) } catch { /* ignore */ }
+                return
+              }
+              if (from) {
+                if (import.meta.env.DEV) console.log('[signal] ICE queued from', from)
+                const queue = pendingIceCandidatesRef.current[from] || []
+                queue.push(signal)
+                pendingIceCandidatesRef.current[from] = queue
               }
               return
             }
 
-            if (!receiverPeerRef.current) {
-              const peer = new Peer({
-                ...PEER_CONFIG,
-                config: {
-                  ...PEER_CONFIG.config,
-                  iceServers: [...PEER_CONFIG.config.iceServers, ...turnServersRef.current]
-                }
-              })
-              receiverPeerRef.current = peer
-              attachIceDiagnostics(peer, 'receiver')
-              const failReceiverPeer = (reason) => {
-                if (receiverPeerRef.current !== peer || peer.destroyed) return
-                clearReceiverConnectTimeout()
-                receiverPeerRef.current = null
-                peer.destroy()
-                if (receiverRetryCount < MAX_PEER_RETRIES && !recvStateRef.current) {
-                  receiverRetryCount += 1
-                  if (import.meta.env.DEV) console.warn(`[peer] receiver retry ${receiverRetryCount}:`, reason)
-                  return
-                }
-                setError('Koneksi perangkat gagal. Silakan coba lagi.')
-                if (recvStateRef.current?.fromName === fromUser) {
-                  recvStateRef.current = null
-                  setReceiving(null)
-                }
+            if (receiverPeerRef.current) {
+              clearReceiverConnectTimeout()
+              receiverPeerRef.current.destroy()
+              receiverPeerRef.current = null
+              receiverPeerSourceRef.current = null
+            }
+
+            if (import.meta.env.DEV) console.log('[peer] create receiver for', from)
+            const peer = new Peer({
+              ...PEER_CONFIG,
+              config: {
+                ...PEER_CONFIG.config,
+                iceServers: [...PEER_CONFIG.config.iceServers, ...turnServersRef.current]
               }
+            })
+            receiverPeerRef.current = peer
+            receiverPeerSourceRef.current = from
+            attachIceDiagnostics(peer, 'receiver')
+            const failReceiverPeer = (reason) => {
+              if (receiverPeerRef.current !== peer || peer.destroyed) return
+              clearReceiverConnectTimeout()
+              delete pendingIceCandidatesRef.current[from]
+              receiverPeerRef.current = null
+              receiverPeerSourceRef.current = null
+              peer.destroy()
+              if (receiverRetryCount < MAX_PEER_RETRIES && !recvStateRef.current) {
+                receiverRetryCount += 1
+                if (import.meta.env.DEV) console.warn(`[peer] receiver retry ${receiverRetryCount}:`, reason)
+                return
+              }
+              setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
+              if (recvStateRef.current?.fromName === fromUser) {
+                recvStateRef.current = null
+                setReceiving(null)
+              }
+            }
 
               peer.on('signal', (answer) => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
@@ -750,10 +785,13 @@ export default function App() {
                   failReceiverPeer(errCode)
                   return
                 }
-                setError('Gagal terhubung ke penerima. Coba lagi.')
+                setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
+                clearReceiverConnectTimeout()
+                delete pendingIceCandidatesRef.current[from]
                 if (receiverPeerRef.current === peer) {
                   receiverPeerRef.current.destroy()
                   receiverPeerRef.current = null
+                  receiverPeerSourceRef.current = null
                 }
                 if (recvStateRef.current?.fromName === fromUser) {
                   recvStateRef.current = null
@@ -764,11 +802,13 @@ export default function App() {
               peer.on('close', () => {
                 if (receiverPeerRef.current !== peer) return
                 if (import.meta.env.DEV) console.log('[peer] closed')
+                delete pendingIceCandidatesRef.current[from]
                 if (!recvStateRef.current) {
                   failReceiverPeer('close')
                   return
                 }
                 receiverPeerRef.current = null
+                receiverPeerSourceRef.current = null
                 if (recvStateRef.current?.fromName === fromUser) {
                   recvStateRef.current = null
                   setReceiving(null)
@@ -779,9 +819,21 @@ export default function App() {
               receiverConnectTimeout = setTimeout(() => {
                 failReceiverPeer('timeout')
               }, PEER_CONNECT_TIMEOUT)
-            }
+
             if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
               receiverPeerRef.current.signal(signal)
+              const pending = pendingIceCandidatesRef.current[from]
+              if (pending && pending.length > 0) {
+                if (import.meta.env.DEV) console.log('[signal] flushing', pending.length, 'pending ICE candidates from', from)
+                pending.forEach(cand => {
+                  try {
+                    if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
+                      receiverPeerRef.current.signal(cand)
+                    }
+                  } catch { /* ignore */ }
+                })
+                delete pendingIceCandidatesRef.current[from]
+              }
             } else if (!receiverPeerRef.current && !recvStateRef.current && !receiverCompleted) {
               receiverRetryCount = 0
             }
@@ -901,7 +953,9 @@ export default function App() {
       if (receiverPeerRef.current) {
         receiverPeerRef.current.destroy()
         receiverPeerRef.current = null
+        receiverPeerSourceRef.current = null
       }
+      delete pendingIceCandidatesRef.current[state.fromId]
       recvStateRef.current = null
     }
 
@@ -926,10 +980,12 @@ export default function App() {
       if (senderPeerRef.current) {
         senderPeerRef.current.destroy()
         senderPeerRef.current = null
+        senderPeerTargetRef.current = null
       }
       if (receiverPeerRef.current) {
         receiverPeerRef.current.destroy()
         receiverPeerRef.current = null
+        receiverPeerSourceRef.current = null
       }
 
       const ws = socketRef.current
@@ -1009,6 +1065,7 @@ export default function App() {
       if (senderPeerRef.current) {
         senderPeerRef.current.destroy()
         senderPeerRef.current = null
+        senderPeerTargetRef.current = null
       }
       resolve()
     }
@@ -1016,6 +1073,7 @@ export default function App() {
     if (senderPeerRef.current) {
       senderPeerRef.current.destroy()
       senderPeerRef.current = null
+      senderPeerTargetRef.current = null
     }
 
     setSendingFiles(prev => prev.map(f =>
@@ -1039,7 +1097,10 @@ export default function App() {
 
     const cleanupPeer = (peer) => {
       clearConnectTimeout()
-      if (senderPeerRef.current === peer) senderPeerRef.current = null
+      if (senderPeerRef.current === peer) {
+        senderPeerRef.current = null
+        senderPeerTargetRef.current = null
+      }
       if (peer && !peer.destroyed) peer.destroy()
     }
 
@@ -1078,12 +1139,13 @@ export default function App() {
         createPeerWithTimeout()
         return
       }
-      setError('Koneksi perangkat gagal. Silakan coba lagi.')
+      setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
       finish(false)
     }
 
     const createPeerWithTimeout = () => {
       if (settled) return
+      if (import.meta.env.DEV) console.log('[peer] create sender for', recipient.id)
       const peer = new Peer({
         ...PEER_CONFIG,
         initiator: true,
@@ -1094,7 +1156,21 @@ export default function App() {
       })
       activePeer = peer
       senderPeerRef.current = peer
+      senderPeerTargetRef.current = recipient.id
       attachIceDiagnostics(peer, 'sender')
+
+      const pending = pendingIceCandidatesRef.current[recipient.id]
+      if (pending && pending.length > 0) {
+        if (import.meta.env.DEV) console.log('[signal] flushing', pending.length, 'pending ICE candidates for sender from', recipient.id)
+        pending.forEach(cand => {
+          try {
+            if (senderPeerRef.current && !senderPeerRef.current.destroyed) {
+              senderPeerRef.current.signal(cand)
+            }
+          } catch { /* ignore */ }
+        })
+        delete pendingIceCandidatesRef.current[recipient.id]
+      }
 
       peer.on('signal', (signal) => {
         if (senderPeerRef.current !== peer || peer.destroyed) return
@@ -1108,7 +1184,7 @@ export default function App() {
         if (senderPeerRef.current !== peer || peer.destroyed || settled) return
         connected = true
         clearConnectTimeout()
-        if (import.meta.env.DEV) console.log('[peer] connected, waiting for channel ready...')
+        if (import.meta.env.DEV) console.log('[peer] sender connected, waiting for channel ready...')
         setSendingFiles(prev => prev.map(f =>
           f.id === fileId ? { ...f, connected: true, status: 'sending' } : f
         ))
@@ -1164,6 +1240,7 @@ export default function App() {
             offset += buffer.byteLength
             chunkCount += 1
 
+            if (chunkCount === 1 && import.meta.env.DEV) console.log('[file] first chunk sent')
             if (chunkCount % 50 === 0 || offset === file.size) if (import.meta.env.DEV) console.log('[file] sent:', offset, '/', file.size)
 
             if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
@@ -1197,18 +1274,18 @@ export default function App() {
 
       peer.on('error', (err) => {
         if (senderPeerRef.current !== peer || settled || transferDone) return
-        if (import.meta.env.DEV) console.error('[peer] error:', err?.code || err?.name || 'unknown')
+        if (import.meta.env.DEV) console.error('[peer] sender error:', err?.code || err?.name || 'unknown')
         if (!connected && !transferStarted) {
           failBeforeConnect(peer, 'error')
           return
         }
-        setError('Gagal terhubung. Coba lagi.')
+        setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
         finish(false)
       })
 
       peer.on('close', () => {
         if (senderPeerRef.current !== peer || settled || transferDone) return
-        if (import.meta.env.DEV) console.log('[peer] closed')
+        if (import.meta.env.DEV) console.log('[peer] sender closed')
         if (!connected && !transferStarted) {
           failBeforeConnect(peer, 'close')
           return
