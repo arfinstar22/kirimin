@@ -170,6 +170,27 @@ function formatRelativeTime(epoch) {
   return `${d} hari lalu`
 }
 
+function formatBytes(bytes, decimals = 2) {
+  if (!bytes || bytes === 0) return '0 Bytes'
+  const k = 1024
+  const dm = decimals < 0 ? 0 : decimals
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
+}
+
+function formatDate(timestamp) {
+  const date = new Date(timestamp)
+  return date.toLocaleDateString('id-ID', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+
 export default function App() {
   const prefersDark = useMediaQuery('(prefers-color-scheme: dark)')
   const [dark, setDark] = useState(prefersDark)
@@ -196,6 +217,8 @@ export default function App() {
   const [receivedFiles, setReceivedFiles] = useState([])
   const [socketId, setSocketId] = useState(null)
   const [wsState, setWsState] = useState('disconnected')
+  const [showFileManager, setShowFileManager] = useState(false)
+  const [fileSearchQuery, setFileSearchQuery] = useState('')
   const senderPeerRef = useRef(null)
   const receiverPeerRef = useRef(null)
   const recvStateRef = useRef(null)
@@ -290,6 +313,37 @@ export default function App() {
       if (import.meta.env.DEV) console.error('[store] failed to load received files:', err)
     }
   }, [])
+
+  const handleDownloadFile = useCallback(async (id) => {
+    try {
+      const file = await getReceivedFile(id)
+      if (!file) return
+
+      const url = URL.createObjectURL(file.blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = file.name
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+
+      await markDownloaded(id)
+      await loadReceivedFiles()
+    } catch (err) {
+      if (import.meta.env.DEV) console.error('[files] download failed:', err)
+    }
+  }, [loadReceivedFiles])
+
+  const handleDeleteFile = useCallback(async (id) => {
+    if (!window.confirm('Hapus berkas ini secara permanen?')) return
+    try {
+      await deleteReceivedFile(id)
+      await loadReceivedFiles()
+    } catch (err) {
+      if (import.meta.env.DEV) console.error('[files] delete failed:', err)
+    }
+  }, [loadReceivedFiles])
 
   useEffect(() => {
     loadReceivedFiles()
@@ -882,7 +936,7 @@ export default function App() {
       cancel()
       delete transferCancelRefs.current[fileId]
     }
-    setSendingFiles(prev => prev.map(f => 
+    setSendingFiles(prev => prev.map(f =>
       f.id === fileId ? { ...f, status: 'cancelled' } : f
     ))
   }, [])
@@ -892,9 +946,9 @@ export default function App() {
       resolve()
       return
     }
-    
+
     let settled = false
-    
+
     transferCancelRefs.current[fileId] = () => {
       if (settled) return
       settled = true
@@ -1199,7 +1253,7 @@ export default function App() {
       speed: 0,
       error: null
     }))
-    
+
     fileQueueRef.current.push(...newFiles)
     setSendingFiles(prev => [...prev, ...newFiles])
     processFileQueue()
@@ -1390,6 +1444,18 @@ export default function App() {
     <section className="layout">
       <aside>
         <div className="sidebar-section">
+          <div className="sidebar-title">
+            <span>Berkas Diterima</span>
+            <button
+              onClick={() => setShowFileManager(true)}
+              className="file-manager-btn"
+              style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, color: 'var(--primary)', textTransform: 'normal', letterSpacing: 'normal', padding: 0 }}
+            >
+              Kelola ({receivedFiles.length})
+            </button>
+          </div>
+        </div>
+        <div className="sidebar-section">
           <div className="sidebar-title"><span>Pengguna Online</span><b>{users.length}</b></div>
           {users.length === 0 && <p className="empty-hint">Menunggu pengguna lain bergabung…</p>}
           {users.map((u) => (
@@ -1445,8 +1511,8 @@ export default function App() {
                     {transfer.status === 'sending' && <strong>{percent}%</strong>}
                     {transfer.status === 'completed' && <strong>100%</strong>}
                     {['connecting', 'sending'].includes(transfer.status) && (
-                      <button 
-                        onClick={() => cancelFile(transfer.id)} 
+                      <button
+                        onClick={() => cancelFile(transfer.id)}
                         className="cancel-btn"
                         style={{ fontSize: 10, padding: '2px 6px', background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
                       >
@@ -1565,6 +1631,74 @@ export default function App() {
           </div>
         ))}
         <div className="download-panel-hint">Berkas sudah tersimpan dan bisa kamu lihat kembali di notifikasi.</div>
+      </div>
+    )}
+    {showFileManager && (
+      <div className="modal-overlay" onClick={() => setShowFileManager(false)}>
+        <div className="modal-content file-manager-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 600, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+          <div className="modal-header">
+            <div>
+              <h3 style={{ margin: 0 }}>Kelola Berkas</h3>
+              <small style={{ color: 'var(--muted)' }}>
+                {receivedFiles.length} berkas · {formatBytes(receivedFiles.reduce((acc, f) => acc + (f.size || 0), 0))}
+              </small>
+            </div>
+            <button onClick={() => setShowFileManager(false)}>×</button>
+          </div>
+          <div style={{ padding: '0 0 16px 0' }}>
+            <input
+              type="text"
+              placeholder="Cari berkas..."
+              value={fileSearchQuery}
+              onChange={(e) => setFileSearchQuery(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+            />
+          </div>
+          <div className="modal-body" style={{ overflowY: 'auto', flex: 1, padding: 0 }}>
+            {(() => {
+              const filtered = receivedFiles.filter(f =>
+                f.name.toLowerCase().includes(fileSearchQuery.toLowerCase())
+              )
+
+              if (filtered.length === 0) {
+                return (
+                  <div style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--muted)' }}>
+                    {receivedFiles.length === 0 ? 'Belum ada file tersimpan' : 'Tidak ada berkas yang cocok'}
+                  </div>
+                )
+              }
+
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {filtered.map((file) => (
+                    <div key={file.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
+                      <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
+                        <b style={{ display: 'block', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{file.name}</b>
+                        <small style={{ color: 'var(--muted)', display: 'block' }}>
+                          {formatBytes(file.size)} · {formatDate(file.receivedAt)} · Dari: {file.sender}
+                        </small>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                        <button
+                          onClick={() => handleDownloadFile(file.id)}
+                          style={{ padding: '6px 12px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+                        >
+                          Download
+                        </button>
+                        <button
+                          onClick={() => handleDeleteFile(file.id)}
+                          style={{ padding: '6px 12px', background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+                        >
+                          Hapus
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
+          </div>
+        </div>
       </div>
     )}
   </main>
