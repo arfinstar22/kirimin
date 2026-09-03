@@ -252,7 +252,6 @@ export default function App() {
   const nameRef = useRef(name)
   const socketIdRef = useRef(socketId)
   const backpressureTimerRef = useRef(null)
-  const turnServersRef = useRef([])
   const forceLogoutReceivedRef = useRef(false)
   const profileContainerRef = useRef(null)
   const notificationWrapRef = useRef(null)
@@ -431,29 +430,6 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleFocusOrVisibility)
     }
   }, [])
-
-  useEffect(() => {
-    if (!joined) return
-
-    const fetchTurn = async () => {
-      try {
-        const turnUrl = SIGNALING_URL.replace('wss://', 'https://').replace('ws://', 'http://').replace(/\/ws$/, '')
-        const turnRes = await fetch(`${turnUrl}/turn`, { method: 'POST' })
-        if (turnRes.ok) {
-          const data = await turnRes.json()
-          if (data && data.iceServers) {
-            const raw = data.iceServers
-            const normalized = Array.isArray(raw) ? raw.flat() : [raw]
-            turnServersRef.current = normalized.filter(s => s && (s.urls || s.url))
-          }
-        }
-        // 501 / failure: TURN unavailable — app stays online, STUN/direct P2P used
-      } catch (err) {
-        if (import.meta.env.DEV) console.error('[turn] TURN tidak tersedia, fallback ke STUN/direct:', err)
-      }
-    }
-    fetchTurn()
-  }, [joined])
 
   useEffect(() => {
     chatOpenRef.current = chatOpen
@@ -671,10 +647,7 @@ export default function App() {
             if (import.meta.env.DEV) console.log('[peer] create receiver for', from)
             const peer = new Peer({
               ...PEER_CONFIG,
-              config: {
-                ...PEER_CONFIG.config,
-                iceServers: [...PEER_CONFIG.config.iceServers, ...turnServersRef.current]
-              }
+              config: PEER_CONFIG.config
             })
             receiverPeerRef.current = peer
             receiverPeerSourceRef.current = from
@@ -1135,10 +1108,7 @@ export default function App() {
       const peer = new Peer({
         ...PEER_CONFIG,
         initiator: true,
-        config: {
-          ...PEER_CONFIG.config,
-          iceServers: [...PEER_CONFIG.config.iceServers, ...turnServersRef.current]
-        }
+        config: PEER_CONFIG.config
       })
       activePeer = peer
       senderPeerRef.current = peer

@@ -36,53 +36,12 @@ export default {
       }
     }
 
-    if (request.method === 'OPTIONS' && url.pathname === '/turn') {
-      return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type'
-        }
-      })
-    }
-
     if (url.pathname === '/reset') {
       if (request.method !== 'POST') {
         return json({ error: 'Method not allowed' }, 405)
       }
       const id = env.SIGNALING.idFromName('default')
       return env.SIGNALING.get(id).fetch(request)
-    }
-
-    if (request.method === 'POST' && url.pathname === '/turn') {
-      try {
-        if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) {
-          return json({ error: 'TURN not configured' }, 501, { 'Access-Control-Allow-Origin': '*' })
-        }
-
-        const ttl = 86400 // 24 hours
-        const cfUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate`
-
-        const response = await fetch(cfUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${env.TURN_API_TOKEN}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ ttl })
-        })
-
-        if (!response.ok) {
-          return json({ error: 'Failed to generate TURN credentials' }, 502, { 'Access-Control-Allow-Origin': '*' })
-        }
-
-        const data = await response.json()
-        return json(data, 200, {
-          'Access-Control-Allow-Origin': '*'
-        })
-      } catch (err) {
-        return json({ error: 'Internal server error' }, 500, { 'Access-Control-Allow-Origin': '*' })
-      }
     }
 
     if (url.pathname === '/ws') {
