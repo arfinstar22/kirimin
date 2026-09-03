@@ -12,7 +12,7 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
       manifest: {
-        name: 'Kirimin PLN',
+        name: 'Kirimin',
         short_name: 'Kirimin',
         description: 'Aplikasi berbagi file langsung antar perangkat',
         start_url: '/',
