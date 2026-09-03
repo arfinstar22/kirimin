@@ -251,7 +251,6 @@ export default function App() {
   const shouldReconnectRef = useRef(true)
   const nameRef = useRef(name)
   const socketIdRef = useRef(socketId)
-  const backpressureTimerRef = useRef(null)
   const forceLogoutReceivedRef = useRef(false)
   const profileContainerRef = useRef(null)
   const notificationWrapRef = useRef(null)
@@ -267,6 +266,7 @@ export default function App() {
   const typingTimeoutsRef = useRef({})
   const typingStateRef = useRef({ active: false, recipientId: null })
   const transferCancelRefs = useRef({})
+  const pendingIceCandidatesRef = useRef({})
 
   const sendTypingEvent = useCallback((isTyping, recipientId = null) => {
     const targetId = recipientId || chatOpen
@@ -472,7 +472,6 @@ export default function App() {
     const MAX_RECONNECT_DELAY = 30000
     const BASE_DELAY = 1000
     let receiverConnectTimeout = null
-    let receiverRetryCount = 0
 
     const clearReceiverConnectTimeout = () => {
       if (receiverConnectTimeout) {
@@ -633,7 +632,12 @@ export default function App() {
                 try { senderPeerRef.current.signal(signal) } catch { /* ignore */ }
                 return
               }
-              if (import.meta.env.DEV) console.log('[signal] ICE ignored: no matching peer for', from)
+              if (from) {
+                if (import.meta.env.DEV) console.log('[signal] ICE queued from', from)
+                const queue = pendingIceCandidatesRef.current[from] || []
+                queue.push(signal)
+                pendingIceCandidatesRef.current[from] = queue
+              }
               return
             }
 
@@ -651,21 +655,18 @@ export default function App() {
             })
             receiverPeerRef.current = peer
             receiverPeerSourceRef.current = from
+            if (import.meta.env.DEV) console.log('[file-recv] receiver peer created for', from)
             attachIceDiagnostics(peer, 'receiver')
-            const failReceiverPeer = (_reason) => {
+            const failReceiverPeer = (reason) => {
               if (receiverPeerRef.current !== peer || peer.destroyed) return
+              if (import.meta.env.DEV) console.warn('[file-recv] peer failed:', reason)
               clearReceiverConnectTimeout()
+              delete pendingIceCandidatesRef.current[from]
               receiverPeerRef.current = null
               receiverPeerSourceRef.current = null
               peer.destroy()
-              if (receiverRetryCount < MAX_PEER_RETRIES && !recvStateRef.current) {
-                receiverRetryCount += 1
-                return
-              }
-              setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
-              if (recvStateRef.current?.fromName === fromUser) {
-                recvStateRef.current = null
-                setReceiving(null)
+              if (!recvStateRef.current) {
+                setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
               }
             }
 
@@ -681,7 +682,7 @@ export default function App() {
               peer.on('connect', () => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
                 clearReceiverConnectTimeout()
-                if (import.meta.env.DEV) console.log('[peer] connected!')
+                if (import.meta.env.DEV) console.log('[file-recv] peer connected!')
                 setReceiving(r => r ? { ...r, connected: true } : r)
                 setError(null)
               })
@@ -693,6 +694,7 @@ export default function App() {
                     try {
                        const msg = JSON.parse(data)
                        if (msg.type === 'file-meta') {
+                          if (import.meta.env.DEV) console.log('[file-recv] meta received:', msg.name, msg.size, 'bytes')
                           const pending = recvStateRef.current?.pendingChunks || []
                          recvStateRef.current = {
                            name: msg.name,
@@ -715,6 +717,7 @@ export default function App() {
                          return
                        }
                       if (msg.type === 'file-end') {
+                        if (import.meta.env.DEV) console.log('[file-recv] file-end received, total received:', recvStateRef.current?.received, 'bytes')
                         if (recvStateRef.current) {
                           recvStateRef.current.complete = true
                           await finalizeTransfer()
@@ -730,6 +733,10 @@ export default function App() {
                     if (recvStateRef.current) {
                       recvStateRef.current.chunks.push(chunk)
                       recvStateRef.current.received += chunk.byteLength
+
+                      if (import.meta.env.DEV && recvStateRef.current.received % (1024 * 1024) < chunk.byteLength) {
+                        console.log('[file-recv] progress:', recvStateRef.current.received, '/', recvStateRef.current.size)
+                      }
 
                       const elapsed = (Date.now() - recvStateRef.current.startTime) / 1000
                       recvStateRef.current.speed = elapsed > 0 ? recvStateRef.current.received / elapsed : 0
@@ -760,38 +767,37 @@ export default function App() {
 
               peer.on('error', (err) => {
                 const errCode = err?.code || err?.name || 'unknown'
-                if (import.meta.env.DEV) console.error('[peer] error:', errCode)
+                if (import.meta.env.DEV) console.error('[file-recv] peer error:', errCode)
                 if (receiverCompleted) return
-                if (!recvStateRef.current) {
-                  failReceiverPeer(errCode)
-                  return
-                }
-                setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
                 clearReceiverConnectTimeout()
+                delete pendingIceCandidatesRef.current[from]
                 if (receiverPeerRef.current === peer) {
                   receiverPeerRef.current.destroy()
                   receiverPeerRef.current = null
                   receiverPeerSourceRef.current = null
                 }
-                if (recvStateRef.current?.fromName === fromUser) {
+                if (recvStateRef.current) {
+                  setError('Transfer terputus. Berkas mungkin tidak lengkap.')
                   recvStateRef.current = null
                   setReceiving(null)
+                } else {
+                  setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
                 }
               })
 
               peer.on('close', () => {
                 if (receiverPeerRef.current !== peer) return
-                if (import.meta.env.DEV) console.log('[peer] closed')
-                if (!recvStateRef.current) {
-                  failReceiverPeer('close')
-                  return
+                if (import.meta.env.DEV) console.log('[file-recv] peer closed')
+                delete pendingIceCandidatesRef.current[from]
+                if (recvStateRef.current) {
+                  setError('Transfer terputus. Berkas mungkin tidak lengkap.')
+                  recvStateRef.current = null
+                  setReceiving(null)
+                } else {
+                  setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
                 }
                 receiverPeerRef.current = null
                 receiverPeerSourceRef.current = null
-                if (recvStateRef.current?.fromName === fromUser) {
-                  recvStateRef.current = null
-                  setReceiving(null)
-                }
               })
 
               clearReceiverConnectTimeout()
@@ -801,8 +807,20 @@ export default function App() {
 
             if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
               receiverPeerRef.current.signal(signal)
+              const pending = pendingIceCandidatesRef.current[from]
+              if (pending && pending.length > 0) {
+                if (import.meta.env.DEV) console.log('[signal] flushing', pending.length, 'pending ICE candidates from', from, '→ receiver')
+                pending.forEach(cand => {
+                  try {
+                    if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
+                      receiverPeerRef.current.signal(cand)
+                    }
+                  } catch { /* ignore */ }
+                })
+                delete pendingIceCandidatesRef.current[from]
+              }
             } else if (!receiverPeerRef.current && !recvStateRef.current && !receiverCompleted) {
-              receiverRetryCount = 0
+              // receiver not created yet (should not happen)
             }
           } catch (err) {
             if (import.meta.env.DEV) console.error('[signal] error:', err)
@@ -872,10 +890,12 @@ export default function App() {
       const state = recvStateRef.current
       if (!state || state.finalized) return
       state.finalized = true
+      if (import.meta.env.DEV) console.log('[file-recv] finalizing, total:', state.received, 'expected:', state.size)
 
       const blob = new Blob(state.chunks, { type: state.mime })
       state.chunks = []
       const receivedChecksum = await sha256Hex(blob)
+      if (import.meta.env.DEV) console.log('[file-recv] checksum match:', state.checksum ? receivedChecksum === state.checksum : 'no checksum')
       if (state.checksum && receivedChecksum !== state.checksum) {
         setError('Berkas rusak saat transfer. Pengiriman dibatalkan.')
         recvStateRef.current = null
@@ -916,6 +936,8 @@ export default function App() {
         receiverPeerRef.current = null
         receiverPeerSourceRef.current = null
       }
+      const finalSenderId = state.fromId
+      if (finalSenderId) delete pendingIceCandidatesRef.current[finalSenderId]
       recvStateRef.current = null
     }
 
@@ -928,11 +950,6 @@ export default function App() {
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = null
-      }
-
-      if (backpressureTimerRef.current) {
-        clearTimeout(backpressureTimerRef.current)
-        backpressureTimerRef.current = null
       }
 
       clearReceiverConnectTimeout()
@@ -1018,10 +1035,19 @@ export default function App() {
     }
 
     let settled = false
+    let bpTimer = null
+
+    const clearBpTimer = () => {
+      if (bpTimer) {
+        clearTimeout(bpTimer)
+        bpTimer = null
+      }
+    }
 
     transferCancelRefs.current[fileId] = () => {
       if (settled) return
       settled = true
+      clearBpTimer()
       if (senderPeerRef.current) {
         senderPeerRef.current.destroy()
         senderPeerRef.current = null
@@ -1057,7 +1083,9 @@ export default function App() {
 
     const cleanupPeer = (peer) => {
       clearConnectTimeout()
+      clearBpTimer()
       if (senderPeerRef.current === peer) {
+        delete pendingIceCandidatesRef.current[recipient.id]
         senderPeerRef.current = null
         senderPeerTargetRef.current = null
       }
@@ -1068,10 +1096,7 @@ export default function App() {
       if (settled) return
       settled = true
       clearConnectTimeout()
-      if (backpressureTimerRef.current) {
-        clearTimeout(backpressureTimerRef.current)
-        backpressureTimerRef.current = null
-      }
+      clearBpTimer()
       if (activePeer) cleanupPeer(activePeer)
 
       if (success) {
@@ -1114,6 +1139,18 @@ export default function App() {
       senderPeerRef.current = peer
       senderPeerTargetRef.current = recipient.id
       attachIceDiagnostics(peer, 'sender')
+      const pending = pendingIceCandidatesRef.current[recipient.id]
+      if (pending && pending.length > 0) {
+        if (import.meta.env.DEV) console.log('[signal] flushing', pending.length, 'pending ICE candidates for sender from', recipient.id)
+        pending.forEach(cand => {
+          try {
+            if (senderPeerRef.current && !senderPeerRef.current.destroyed) {
+              senderPeerRef.current.signal(cand)
+            }
+          } catch { /* ignore */ }
+        })
+        delete pendingIceCandidatesRef.current[recipient.id]
+      }
 
       peer.on('signal', (signal) => {
         if (senderPeerRef.current !== peer || peer.destroyed) return
@@ -1127,16 +1164,19 @@ export default function App() {
         if (senderPeerRef.current !== peer || peer.destroyed || settled) return
         connected = true
         clearConnectTimeout()
-        if (import.meta.env.DEV) console.log('[peer] sender connected, waiting for channel ready...')
+        if (import.meta.env.DEV) console.log('[file-send] peer connected, starting transfer...')
         setSendingFiles(prev => prev.map(f =>
           f.id === fileId ? { ...f, connected: true, status: 'sending' } : f
         ))
 
         try {
+          if (import.meta.env.DEV) console.log('[file-send] computing checksum for:', file.name, file.size, 'bytes')
           const checksum = await sha256Hex(file)
+          if (import.meta.env.DEV) console.log('[file-send] checksum ready, sending meta...')
           const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum, senderName: nameRef.current, senderId: socketIdRef.current })
           peer.send(meta)
           transferStarted = true
+          if (import.meta.env.DEV) console.log('[file-send] meta sent, starting chunk loop...')
 
           addSystemMessage(recipient.id, 'sent', file.name, file.size)
 
@@ -1153,17 +1193,18 @@ export default function App() {
           const send = async () => {
             if (senderPeerRef.current !== peer || settled) return
             if (!peer.connected) {
+              if (import.meta.env.DEV) console.log('[file-send] peer disconnected during transfer')
               finish(false)
               return
             }
 
             const bufferedAmount = peer.bufferSize
             if (bufferedAmount > maxBufferedAmount) {
-              if (backpressureTimerRef.current) {
+              if (bpTimer) {
                 return
               }
-              backpressureTimerRef.current = setTimeout(() => {
-                backpressureTimerRef.current = null
+              bpTimer = setTimeout(() => {
+                bpTimer = null
                 send()
               }, 20)
               return
@@ -1173,6 +1214,7 @@ export default function App() {
             const buffer = await chunk.arrayBuffer()
             if (senderPeerRef.current !== peer || settled) return
             if (!peer.connected) {
+              if (import.meta.env.DEV) console.log('[file-send] peer disconnected after read')
               finish(false)
               return
             }
@@ -1180,6 +1222,11 @@ export default function App() {
             peer.send(buffer)
             offset += buffer.byteLength
             chunkCount += 1
+
+            if (chunkCount === 1 && import.meta.env.DEV) console.log('[file-send] first chunk sent:', buffer.byteLength, 'bytes')
+            if (chunkCount % 50 === 0 || offset >= file.size) {
+              if (import.meta.env.DEV) console.log('[file-send] progress:', offset, '/', file.size)
+            }
 
             if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
               const elapsed = (Date.now() - startTime) / 1000
@@ -1195,6 +1242,7 @@ export default function App() {
               return
             }
 
+            if (import.meta.env.DEV) console.log('[file-send] all chunks sent, sending file-end')
             peer.send(JSON.stringify({ type: 'file-end' }))
             transferDone = true
             setHistory(h => [{ name: file.name, size: file.size, peer: recipient.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
