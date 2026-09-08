@@ -1321,37 +1321,11 @@ export default function App() {
               }
             }
 
+            // Jalur utama simple-peer.
+            // Jangan memasang native message listener pada peer._channel
+            // karena simple-peer sudah membaca channel tersebut. Listener
+            // tambahan akan membuat setiap chunk diproses dua kali.
             peer.on('data', handleReceiverData)
-
-            const handledChannels = new WeakSet()
-            const attachNativeDataChannel = (channel) => {
-              if (!channel || handledChannels.has(channel)) return
-              handledChannels.add(channel)
-              channel.binaryType = 'arraybuffer'
-
-              const handleMessage = (event) => {
-                if (receiverPeerRef.current !== peer || peer.destroyed) return
-                handleReceiverData(event.data)
-              }
-
-              if (channel.readyState === 'open') {
-                channel.addEventListener('message', handleMessage)
-              } else {
-                channel.addEventListener('open', () => {
-                  if (receiverPeerRef.current !== peer || peer.destroyed) return
-                  channel.addEventListener('message', handleMessage)
-                }, { once: true })
-              }
-            }
-
-            if (pcRecv) {
-              pcRecv.addEventListener('datachannel', (event) => {
-                attachNativeDataChannel(event.channel)
-              })
-              if (peer._channel) {
-                attachNativeDataChannel(peer._channel)
-              }
-            }
 
               peer.on('error', (err) => {
                 const errCode = err?.code || err?.name || 'unknown'
