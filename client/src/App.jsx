@@ -1301,13 +1301,15 @@ export default function App() {
                 state.received += chunk.byteLength
 
                 const totalExpectedChunks = state.size ? Math.ceil(state.size / 16384) : '?'
-                console.log(`[FILE] chunk received: ${state.chunks.length}/${totalExpectedChunks}`)
-                console.log(`[FILE] received bytes: ${state.received}/${state.size ?? '?'}`)
+                if (state.chunks.length === 1 || state.chunks.length % 25 === 0 || (state.size != null && state.received >= state.size)) {
+                  console.log(`[FILE] chunk received: ${state.chunks.length}/${totalExpectedChunks}`)
+                  console.log(`[FILE] received bytes: ${state.received}/${state.size ?? '?'}`)
+                }
 
                 const elapsed = (Date.now() - state.startTime) / 1000
                 state.speed = elapsed > 0 ? state.received / elapsed : 0
 
-                const RECEIVER_PROGRESS_UPDATE_BYTES = 1024 * 1024
+                const RECEIVER_PROGRESS_UPDATE_BYTES = 512 * 1024
                 const lastUpdate = state.lastProgressUpdate || 0
                 if (state.received - lastUpdate >= RECEIVER_PROGRESS_UPDATE_BYTES || (state.size != null && state.received >= state.size) || state.complete) {
                   state.lastProgressUpdate = state.received
@@ -1330,33 +1332,32 @@ export default function App() {
               peer.on('error', (err) => {
                 const errCode = err?.code || err?.name || 'unknown'
                 console.warn('[WEBRTC] peer error (receiver):', errCode)
-                if (receiverCompleted) return
+                if (receiverCompleted || recvStateRef.current?.finalized) return
                 clearReceiverConnectTimeout()
                 delete pendingIceCandidatesRef.current[from]
                 if (receiverPeerRef.current === peer) {
-                  receiverPeerRef.current.destroy()
+                  try { receiverPeerRef.current.destroy() } catch { /* ignore */ }
                   receiverPeerRef.current = null
                   receiverPeerSourceRef.current = null
                 }
-                if (recvStateRef.current) {
+                if (recvStateRef.current && !recvStateRef.current.finalized) {
                   setError('Transfer terputus. Berkas mungkin tidak lengkap.')
                   recvStateRef.current = null
                   setReceiving(null)
-                } else {
+                } else if (!receiverCompleted) {
                   setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
                 }
               })
 
               peer.on('close', () => {
-                if (receiverPeerRef.current !== peer) return
                 console.log('[WEBRTC] peer closed (receiver)')
+                if (receiverCompleted || recvStateRef.current?.finalized) return
+                if (receiverPeerRef.current !== peer) return
                 delete pendingIceCandidatesRef.current[from]
-                if (recvStateRef.current) {
+                if (recvStateRef.current && !recvStateRef.current.finalized) {
                   setError('Transfer terputus. Berkas mungkin tidak lengkap.')
                   recvStateRef.current = null
                   setReceiving(null)
-                } else {
-                  setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
                 }
                 receiverPeerRef.current = null
                 receiverPeerSourceRef.current = null
@@ -1464,6 +1465,7 @@ export default function App() {
       const state = recvStateRef.current
       if (!state || state.finalized) return
       state.finalized = true
+      receiverCompleted = true
       console.log('[FILE] finalize started')
       if (import.meta.env.DEV) console.log('[file-recv] finalizing, total:', state.received, 'expected:', state.size)
 
@@ -1517,7 +1519,6 @@ export default function App() {
         setNotify({ type: 'info', message: `Berkas "${state.name}" diterima. Tersimpan di notifikasi.` })
         setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
         audioRef.current.play().catch(() => {})
-        receiverCompleted = true
 
         const senderId = state.fromId || receiverPeerSourceRef.current
         if (senderId) {
@@ -1530,14 +1531,16 @@ export default function App() {
       setReceiving(null)
       setTimeout(() => {
         if (receiverPeerRef.current) {
-          receiverPeerRef.current.destroy()
+          try {
+            receiverPeerRef.current.destroy()
+          } catch { /* ignore */ }
           receiverPeerRef.current = null
           receiverPeerSourceRef.current = null
         }
         const finalSenderId = state.fromId
         if (finalSenderId) delete pendingIceCandidatesRef.current[finalSenderId]
         recvStateRef.current = null
-      }, 1000)
+      }, 1500)
     }
 
     const handleOnline = () => {
@@ -1879,10 +1882,11 @@ export default function App() {
 
           await new Promise(r => setTimeout(r, 100))
 
-          const chunkSize = 16 * 1024
-          const maxBufferedAmount = 64 * 1024
+          const chunkSize = 64 * 1024
+          const maxBufferedAmount = 1024 * 1024
+          const lowThreshold = 256 * 1024
           const totalChunks = Math.ceil(file.size / chunkSize) || 1
-          const PROGRESS_UPDATE_BYTES = 1024 * 1024
+          const PROGRESS_UPDATE_BYTES = 512 * 1024
           let offset = 0
           let chunkCount = 0
           let lastProgressUpdate = 0
@@ -1903,7 +1907,7 @@ export default function App() {
           const sendLoop = async () => {
             const currentChan = peer._channel
             if (currentChan && typeof currentChan.bufferedAmountLowThreshold === 'number') {
-              currentChan.bufferedAmountLowThreshold = maxBufferedAmount
+              currentChan.bufferedAmountLowThreshold = lowThreshold
             }
 
             const waitForDrain = () => new Promise((resolve) => {
@@ -1945,10 +1949,10 @@ export default function App() {
                   return
                 }
                 const buf = (activeChan && activeChan.bufferedAmount) ?? peer.bufferSize ?? 0
-                if (buf <= maxBufferedAmount) {
+                if (buf <= lowThreshold) {
                   onLow()
                 }
-              }, 20)
+              }, 10)
             })
 
             while (offset < file.size) {
@@ -1970,12 +1974,9 @@ export default function App() {
               offset += buffer.byteLength
               chunkCount += 1
 
-              console.log(`[FILE] chunk sent: ${chunkCount}/${totalChunks}`)
-              console.log(`[FILE] buffered amount: ${(peer._channel && peer._channel.bufferedAmount) ?? peer.bufferSize}`)
-
-              if (chunkCount === 1 && import.meta.env.DEV) console.log('[file-send] first chunk sent:', buffer.byteLength, 'bytes')
-              if (chunkCount % 50 === 0 || offset >= file.size) {
-                if (import.meta.env.DEV) console.log('[file-send] progress:', offset, '/', file.size)
+              if (chunkCount === 1 || chunkCount % 25 === 0 || offset >= file.size) {
+                console.log(`[FILE] chunk sent: ${chunkCount}/${totalChunks}`)
+                console.log(`[FILE] buffered amount: ${(peer._channel && peer._channel.bufferedAmount) ?? peer.bufferSize}`)
               }
 
               if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
@@ -2000,7 +2001,7 @@ export default function App() {
                 if (currentBuf === 0) {
                   resolve()
                 } else {
-                  setTimeout(check, 25)
+                  setTimeout(check, 15)
                 }
               }
               check()
