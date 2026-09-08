@@ -36,6 +36,56 @@ export default {
       }
     }
 
+    if (url.pathname === '/turn') {
+      if (request.method !== 'GET' && request.method !== 'POST') {
+        return json({ error: 'Method not allowed' }, 405, corsHeaders)
+      }
+
+      try {
+        if (env.TURN_KEY_ID && env.TURN_API_TOKEN) {
+          const ttl = 86400
+          const cfUrl = `https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate`
+          const response = await fetch(cfUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${env.TURN_API_TOKEN}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ ttl })
+          })
+          if (response.ok) {
+            const data = await response.json()
+            return json(data, 200, corsHeaders)
+          }
+        }
+
+        if (env.TURN_URL || env.TURN_URLS) {
+          const rawUrls = env.TURN_URLS || env.TURN_URL
+          const urls = rawUrls.split(',').map(u => u.trim()).filter(Boolean)
+          const serverConfig = { urls }
+          if (env.TURN_USERNAME) serverConfig.username = env.TURN_USERNAME
+          if (env.TURN_CREDENTIAL || env.TURN_PASSWORD) {
+            serverConfig.credential = env.TURN_CREDENTIAL || env.TURN_PASSWORD
+          }
+          return json({ iceServers: [serverConfig] }, 200, corsHeaders)
+        }
+
+        if (env.METERED_API_KEY) {
+          const domain = env.METERED_DOMAIN || 'kirimin'
+          const meteredUrl = `https://${domain}.metered.ca/api/v1/turn/credentials?apiKey=${env.METERED_API_KEY}`
+          const response = await fetch(meteredUrl)
+          if (response.ok) {
+            const data = await response.json()
+            return json({ iceServers: data }, 200, corsHeaders)
+          }
+        }
+
+        return json({ error: 'TURN not configured on server', iceServers: [] }, 501, corsHeaders)
+      } catch (err) {
+        return json({ error: 'Failed to obtain TURN credentials', message: err?.message }, 500, corsHeaders)
+      }
+    }
+
     if (url.pathname === '/reset') {
       if (request.method !== 'POST') {
         return json({ error: 'Method not allowed' }, 405)
@@ -145,6 +195,11 @@ export class SignalingRoom {
       return
     }
 
+    if (message.type === 'file-offer' || message.type === 'file-accept' || message.type === 'file-chunk' || message.type === 'file-complete' || message.type === 'file-error') {
+      this.forwardFileMessage(user, message)
+      return
+    }
+
     if (message.type === 'chat') {
       this.forwardChat(user, message)
       return
@@ -212,6 +267,42 @@ export class SignalingRoom {
     }
 
     this.send(target, { type: message.type, from: user.id, data: message.data })
+  }
+
+  forwardFileMessage(user, message) {
+    if (!user.name) {
+      this.sendError(user, 'Register before file transfer')
+      return
+    }
+
+    if (typeof message.target !== 'string' || !message.target) {
+      this.sendError(user, 'Target is required')
+      return
+    }
+
+    if (typeof message.sessionId !== 'string' || !message.sessionId) {
+      this.sendError(user, 'Session ID is required')
+      return
+    }
+
+    const target = this.users.get(message.target)
+    if (!target) {
+      this.sendError(user, 'Target user not found')
+      return
+    }
+
+    const forward = {
+      type: message.type,
+      from: user.id,
+      sessionId: message.sessionId
+    }
+    if (typeof message.fileName === 'string') forward.fileName = message.fileName.slice(0, 255)
+    if (typeof message.fileSize === 'number') forward.fileSize = message.fileSize
+    if (typeof message.checksum === 'string') forward.checksum = message.checksum.slice(0, 128)
+    if (typeof message.chunk === 'string') forward.chunk = message.chunk
+    if (typeof message.error === 'string') forward.error = message.error.slice(0, 500)
+
+    this.send(target, forward)
   }
 
   broadcastUsers() {

@@ -31,20 +31,17 @@ function useMediaQuery(q) {
   return m
 }
 
-const PEER_CONFIG = {
-  initiator: false,
-  trickle: true,
-  config: {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun.cloudflare.com:3478' }
-    ]
-  }
-}
-const MAX_PEER_RETRIES = 1
-const PEER_CONNECT_TIMEOUT = 40000
+const DEFAULT_STUN_SERVERS = [
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' }
+]
+
+const MAX_PEER_RETRIES = 2
+const PEER_CONNECT_TIMEOUT = 25000
+const WS_CHUNK_SIZE = 32 * 1024
+const WS_TRANSFER_TIMEOUT = 180000
 
 async function logIceStats(peer, label) {
   if (!import.meta.env.DEV) return
@@ -54,53 +51,104 @@ async function logIceStats(peer, label) {
     const stats = await pc.getStats()
     let pairFound = false
     stats.forEach(report => {
-      if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+      if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.selected || report.nominated)) {
         pairFound = true
         const local = stats.get(report.localCandidateId)
         const remote = stats.get(report.remoteCandidateId)
-        console.log(`[ICE STATS] ${label}: pair state=${report.state} protocol=${report.protocol || 'udp'} local=${local?.candidateType || 'unknown'} remote=${remote?.candidateType || 'unknown'}`)
+        const localType = local?.candidateType || local?.type || 'unknown'
+        const remoteType = remote?.candidateType || remote?.type || 'unknown'
+        console.log(`[WebRTC] [${label}] selected candidate pair: state=${report.state} protocol=${report.protocol || 'udp'} local=${localType} remote=${remoteType}`)
+        if (localType === 'relay' || remoteType === 'relay') {
+          console.log(`[WebRTC] [${label}] TURN relay`)
+        } else {
+          console.log(`[WebRTC] [${label}] direct P2P (${localType} <-> ${remoteType})`)
+        }
       }
     })
     if (!pairFound) {
-      console.log(`[ICE STATS] ${label}: no successful candidate pair found`)
+      console.log(`[WebRTC] [${label}] no active candidate pair yet`)
     }
-  } catch(e) {
-    console.error(`[ICE STATS] ${label}: failed to get stats`, e)
+  } catch (e) {
+    console.warn(`[WebRTC] [${label}] failed to get stats:`, e?.message || e)
   }
 }
 
 function attachIceDiagnostics(peer, role) {
-  if (!import.meta.env.DEV) return
   try {
     const pc = peer._pc
     if (!pc) return
+
+    let hostFound = false
+    let srflxFound = false
+    let relayFound = false
+
     pc.addEventListener('icegatheringstatechange', () => {
-      console.log(`[ICE] ${role} gathering: ${pc.iceGatheringState}`)
+      if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE gathering state: ${pc.iceGatheringState}`)
+      if (pc.iceGatheringState === 'complete') {
+        if (import.meta.env.DEV) {
+          console.log(`[WebRTC] [${role}] ICE gathering complete: host=${hostFound} srflx=${srflxFound} relay=${relayFound}`)
+          if (relayFound) {
+            console.log(`[WebRTC] [${role}] TURN relay candidate discovered`)
+          } else {
+            console.log(`[WebRTC] [${role}] direct P2P candidates only (no TURN relay)`)
+          }
+        }
+        logIceStats(peer, role)
+      }
     })
+
     pc.addEventListener('iceconnectionstatechange', () => {
-      console.log(`[ICE] ${role} connection: ${pc.iceConnectionState}`)
+      if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE connection state: ${pc.iceConnectionState}`)
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         logIceStats(peer, role)
       }
     })
+
+    pc.addEventListener('signalingstatechange', () => {
+      if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] signaling state: ${pc.signalingState}`)
+    })
+
     if (typeof pc.connectionState === 'string') {
       pc.addEventListener('connectionstatechange', () => {
-        console.log(`[ICE] ${role} connection-state: ${pc.connectionState}`)
+        if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] connection state: ${pc.connectionState}`)
         if (pc.connectionState === 'connected' || pc.connectionState === 'completed') {
           logIceStats(peer, role)
         }
       })
     }
+
     pc.addEventListener('icecandidateerror', (e) => {
-      console.log(`[ICE] ${role} candidate-error: host=${e.hostCandidate ?? ''} url=${e.url ?? ''} code=${e.errorCode ?? ''} text=${e.errorText ?? ''}`)
+      if (import.meta.env.DEV) console.warn(`[WebRTC] [${role}] ICE candidate error: url=${e.url ?? 'none'} code=${e.errorCode ?? 'none'} text=${e.errorText ?? 'none'}`)
     })
+
     pc.addEventListener('icecandidate', (e) => {
-      if (!e.candidate) return
-      const type = e.candidate.type === 'srflx' ? 'srflx' : e.candidate.type === 'relay' ? 'relay' : (e.candidate.address?.includes('.local') ? 'mdns/host' : e.candidate.type || 'host')
-      console.log(`[ICE] ${role} candidate: ${type}`)
+      if (!e.candidate) {
+        if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE gathering end (null candidate)`)
+        return
+      }
+      const type = e.candidate.type || 'unknown'
+      if (type === 'relay') relayFound = true
+      else if (type === 'srflx') srflxFound = true
+      else if (type === 'host') hostFound = true
+
+      const proto = e.candidate.protocol || 'udp'
+      if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE candidate type: ${type} protocol=${proto}`)
     })
-  } catch {
-    /* diagnostics best-effort */
+
+    // Safe addIceCandidate wrapper to protect simple-peer-light from ERR_ADD_ICE_CANDIDATE destruction
+    const origAddIceCandidate = pc.addIceCandidate.bind(pc)
+    pc.addIceCandidate = async function (candidate) {
+      try {
+        const res = await origAddIceCandidate(candidate)
+        if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE candidate added`)
+        return res
+      } catch (err) {
+        if (import.meta.env.DEV) console.warn(`[WebRTC] [${role}] non-fatal candidate error ignored:`, err?.message || err)
+        return Promise.resolve()
+      }
+    }
+  } catch (err) {
+    if (import.meta.env.DEV) console.warn('[WebRTC] diagnostics attachment failed:', err)
   }
 }
 
@@ -262,11 +310,410 @@ export default function App() {
   const chatContainerRef = useRef(null)
   const chatFileInputRef = useRef(null)
   const [typingUsers, setTypingUsers] = useState({})
-  const typingTimerRef = useRef(null)
   const typingTimeoutsRef = useRef({})
+  const typingTimerRef = useRef(null)
   const typingStateRef = useRef({ active: false, recipientId: null })
-  const transferCancelRefs = useRef({})
+  const turnServersRef = useRef([])
   const pendingIceCandidatesRef = useRef({})
+  const transferCancelRefs = useRef({})
+  const wsTransferSessionsRef = useRef(new Map())
+  const completedSessionsRef = useRef(new Set())
+
+  const loadReceivedFiles = useCallback(async () => {
+    try {
+      const files = await getAllReceivedFiles()
+      const sorted = [...files].sort((a, b) => b.receivedAt - a.receivedAt)
+      setReceivedFiles(sorted)
+    } catch (err) {
+      if (import.meta.env.DEV) console.error('[store] failed to load received files:', err)
+    }
+  }, [])
+
+  const addSystemMessage = useCallback((userId, type, fileName, fileSize) => {
+    if (!userId) return
+    setChatMessages(prev => {
+      const userMessages = prev[userId] || []
+      return {
+        ...prev,
+        [userId]: [...userMessages, {
+          type: 'system',
+          systemType: type,
+          fileName,
+          fileSize,
+          timestamp: Date.now()
+        }]
+      }
+    })
+    if (chatOpenRef.current !== userId) {
+      setUnreadCount(prev => ({
+        ...prev,
+        [userId]: (prev[userId] || 0) + 1
+      }))
+    }
+  }, [])
+
+  const handleFileAccept = useCallback((message) => {
+    const sessionId = message.sessionId
+    const session = wsTransferSessionsRef.current.get(sessionId)
+    if (!session || session.type !== 'send') return
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] send accepted:', sessionId)
+    session.accepted = true
+  }, [])
+
+  const handleFileChunk = useCallback((message) => {
+    const sessionId = message.sessionId
+    if (completedSessionsRef.current.has(sessionId)) return
+
+    const session = wsTransferSessionsRef.current.get(sessionId)
+    if (!session || session.type !== 'recv') return
+
+    const elapsed = Date.now() - session.startTime
+    if (elapsed > WS_TRANSFER_TIMEOUT) {
+      if (import.meta.env.DEV) console.error('[ws-transfer] recv timeout')
+      setError('Transfer timeout.')
+      setReceiving(null)
+      wsTransferSessionsRef.current.delete(sessionId)
+      return
+    }
+
+    const chunk = Uint8Array.from(atob(message.chunk), c => c.charCodeAt(0))
+    session.chunks.push(chunk)
+    session.received += chunk.length
+
+    if (session.chunks.length === 1 && import.meta.env.DEV) {
+      console.log('[ws-transfer] first chunk received')
+    }
+
+    setReceiving(prev => prev ? { ...prev, received: session.received, fallback: true } : null)
+  }, [])
+
+  const handleFileComplete = useCallback(async (message) => {
+    const sessionId = message.sessionId
+    if (completedSessionsRef.current.has(sessionId)) return
+
+    const session = wsTransferSessionsRef.current.get(sessionId)
+    if (!session || session.type !== 'recv') return
+
+    completedSessionsRef.current.add(sessionId)
+    if (completedSessionsRef.current.size > 100) {
+      const first = completedSessionsRef.current.values().next().value
+      completedSessionsRef.current.delete(first)
+    }
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] complete received:', sessionId)
+
+    if (session.received !== session.fileSize) {
+      if (import.meta.env.DEV) console.error('[ws-transfer] size mismatch:', session.received, '!==', session.fileSize)
+      setError('Berkas tidak lengkap saat transfer via relay.')
+      setReceiving(null)
+      wsTransferSessionsRef.current.delete(sessionId)
+      return
+    }
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] size verified, computing checksum...')
+    const blob = new Blob(session.chunks)
+    const receivedChecksum = await sha256Hex(blob)
+
+    if (session.checksum && receivedChecksum !== session.checksum) {
+      if (import.meta.env.DEV) console.error('[ws-transfer] checksum mismatch')
+      setError('Berkas rusak saat transfer via relay. Checksum tidak cocok.')
+      setReceiving(null)
+      wsTransferSessionsRef.current.delete(sessionId)
+      return
+    }
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] checksum verified, saving file...')
+    try {
+      const fromUser = usersRef.current.find(u => u.id === session.from)?.name || 'Seseorang'
+      const savedRecord = await saveReceivedFile({
+        name: session.fileName,
+        size: session.fileSize,
+        type: 'application/octet-stream',
+        sender: fromUser,
+        blob
+      })
+
+      setReceivedFiles(prev => [savedRecord, ...prev.filter(f => f.id !== savedRecord.id)])
+      await loadReceivedFiles()
+      setShowDownloadPanel(true)
+      setNotify({ type: 'info', message: `Berkas "${session.fileName}" diterima via relay.` })
+      setHistory(h => [{ name: session.fileName, size: session.fileSize, peer: fromUser, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
+      audioRef.current.play().catch(() => {})
+
+      addSystemMessage(session.from, 'received', session.fileName, session.fileSize)
+      if (import.meta.env.DEV) console.log('[ws-transfer] file saved successfully')
+    } catch {
+      setNotify({ type: 'error', message: `Gagal menyimpan berkas "${session.fileName}".` })
+    }
+
+    setReceiving(null)
+    wsTransferSessionsRef.current.delete(sessionId)
+  }, [addSystemMessage, loadReceivedFiles])
+
+  const handleFileError = useCallback((message) => {
+    const sessionId = message.sessionId
+    const session = wsTransferSessionsRef.current.get(sessionId)
+    if (!session) return
+
+    if (import.meta.env.DEV) console.error('[ws-transfer] error:', message.error)
+
+    if (session.type === 'recv') {
+      setReceiving(null)
+    } else if (session.type === 'send') {
+      setSendingFiles(prev => prev.map(f =>
+        f.id === session.fileId ? { ...f, status: 'failed', error: 'Transfer gagal' } : f
+      ))
+    }
+
+    wsTransferSessionsRef.current.delete(sessionId)
+  }, [])
+
+  const handleFileOffer = useCallback((message) => {
+    const sessionId = message.sessionId
+    const from = message.from
+    const fileName = message.fileName
+    const fileSize = message.fileSize
+    const checksum = message.checksum
+
+    if (completedSessionsRef.current.has(sessionId)) {
+      if (import.meta.env.DEV) console.log('[ws-transfer] ignoring duplicate offer for completed session:', sessionId)
+      return
+    }
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] offer received:', sessionId, fileName, fileSize, 'from:', from)
+
+    wsTransferSessionsRef.current.set(sessionId, {
+      type: 'recv',
+      sessionId,
+      from,
+      fileName,
+      fileSize,
+      checksum,
+      chunks: [],
+      received: 0,
+      startTime: Date.now()
+    })
+
+    setReceiving({
+      name: fileName,
+      size: fileSize,
+      received: 0,
+      connected: false,
+      fallback: true
+    })
+
+    const s = socketRef.current
+    if (s && s.readyState === WebSocket.OPEN) {
+      if (import.meta.env.DEV) console.log('[ws-transfer] sending accept for:', sessionId)
+      s.send(JSON.stringify({
+        type: 'file-accept',
+        target: from,
+        sessionId
+      }))
+    }
+  }, [])
+
+  const sendFileViaWebSocket = useCallback(async (file, recipient, fileId) => {
+    const sessionId = generateId()
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] starting via WebSocket relay:', file.name, 'sessionId:', sessionId)
+
+    const checksum = await sha256Hex(file)
+
+    wsTransferSessionsRef.current.set(sessionId, {
+      type: 'send',
+      sessionId,
+      file,
+      recipient,
+      fileId,
+      checksum,
+      accepted: false,
+      startTime: Date.now()
+    })
+
+    const s = socketRef.current
+    if (!s || s.readyState !== WebSocket.OPEN) {
+      wsTransferSessionsRef.current.delete(sessionId)
+      throw new Error('WebSocket not connected')
+    }
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] sending offer to:', recipient.id)
+    s.send(JSON.stringify({
+      type: 'file-offer',
+      target: recipient.id,
+      sessionId,
+      fileName: file.name,
+      fileSize: file.size,
+      checksum
+    }))
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] waiting for accept...')
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        wsTransferSessionsRef.current.delete(sessionId)
+        reject(new Error('Timeout waiting for accept'))
+      }, 10000)
+
+      const checkAccept = () => {
+        const session = wsTransferSessionsRef.current.get(sessionId)
+        if (!session) {
+          clearTimeout(timeout)
+          reject(new Error('Session cancelled'))
+          return
+        }
+        if (session.accepted) {
+          clearTimeout(timeout)
+          if (import.meta.env.DEV) console.log('[ws-transfer] accept received')
+          resolve()
+        } else {
+          setTimeout(checkAccept, 100)
+        }
+      }
+      checkAccept()
+    })
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] accepted, streaming chunks')
+
+    addSystemMessage(recipient.id, 'sent', file.name, file.size)
+
+    const chunkSize = WS_CHUNK_SIZE
+    let offset = 0
+    const transferStartTime = Date.now()
+    let chunksSent = 0
+
+    while (offset < file.size) {
+      const session = wsTransferSessionsRef.current.get(sessionId)
+      if (!session) {
+        throw new Error('Session cancelled during transfer')
+      }
+
+      const currentSocket = socketRef.current
+      if (!currentSocket || currentSocket.readyState !== WebSocket.OPEN) {
+        wsTransferSessionsRef.current.delete(sessionId)
+        throw new Error('WebSocket disconnected during transfer')
+      }
+
+      const elapsed = Date.now() - session.startTime
+      if (elapsed > WS_TRANSFER_TIMEOUT) {
+        wsTransferSessionsRef.current.delete(sessionId)
+        throw new Error('Transfer timeout')
+      }
+
+      // Backpressure: wait if WebSocket buffer is high
+      const maxWsBuffered = 256 * 1024
+      while (currentSocket.bufferedAmount > maxWsBuffered) {
+        await new Promise(r => setTimeout(r, 20))
+      }
+
+      const chunk = file.slice(offset, offset + chunkSize)
+      const buffer = await chunk.arrayBuffer()
+      const uint8 = new Uint8Array(buffer)
+      const base64 = btoa(String.fromCharCode(...uint8))
+
+      currentSocket.send(JSON.stringify({
+        type: 'file-chunk',
+        target: recipient.id,
+        sessionId,
+        chunk: base64
+      }))
+
+      offset += buffer.byteLength
+      chunksSent += 1
+
+      if (chunksSent === 1 && import.meta.env.DEV) {
+        console.log('[ws-transfer] first chunk sent')
+      }
+
+      const transferElapsed = (Date.now() - transferStartTime) / 1000
+      const speed = transferElapsed > 0 ? offset / transferElapsed : 0
+
+      setSendingFiles(prev => prev.map(f =>
+        f.id === fileId ? { ...f, sent: offset, speed, status: 'sending', fallback: true } : f
+      ))
+
+      await new Promise(r => setTimeout(r, 10))
+    }
+
+    const finalSocket = socketRef.current
+    if (!finalSocket || finalSocket.readyState !== WebSocket.OPEN) {
+      wsTransferSessionsRef.current.delete(sessionId)
+      throw new Error('WebSocket disconnected before complete')
+    }
+
+    if (import.meta.env.DEV) console.log('[ws-transfer] all chunks sent, sending complete')
+    finalSocket.send(JSON.stringify({
+      type: 'file-complete',
+      target: recipient.id,
+      sessionId
+    }))
+
+    setHistory(h => [{ name: file.name, size: file.size, peer: recipient.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
+    setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim via relay ke ${recipient.name}` })
+
+    wsTransferSessionsRef.current.delete(sessionId)
+    if (import.meta.env.DEV) console.log('[ws-transfer] transfer complete')
+  }, [addSystemMessage])
+
+
+  const fetchTurnServers = useCallback(async () => {
+    try {
+      const baseUrl = SIGNALING_URL.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://').replace(/\/ws\/?$/i, '')
+      if (import.meta.env.DEV) console.log('[WebRTC] Fetching TURN credentials from:', `${baseUrl}/turn`)
+      const res = await fetch(`${baseUrl}/turn`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data && data.iceServers) {
+          const raw = data.iceServers
+          const list = Array.isArray(raw) ? raw.flat() : [raw]
+          const valid = list.filter(s => s && (s.urls || s.url))
+          if (valid.length > 0) {
+            turnServersRef.current = valid
+            if (import.meta.env.DEV) console.log('[WebRTC] TURN configuration loaded from server:', valid.length, 'servers')
+          }
+        }
+      } else {
+        if (import.meta.env.DEV) console.log('[WebRTC] Server /turn returned status:', res.status)
+      }
+    } catch (err) {
+      if (import.meta.env.DEV) console.warn('[WebRTC] Server /turn endpoint unreachable:', err?.message || err)
+    }
+
+    if (import.meta.env.VITE_TURN_URL) {
+      const rawUrls = import.meta.env.VITE_TURN_URL.split(',').map(u => u.trim()).filter(Boolean)
+      const envServer = { urls: rawUrls }
+      if (import.meta.env.VITE_TURN_USERNAME) envServer.username = import.meta.env.VITE_TURN_USERNAME
+      if (import.meta.env.VITE_TURN_CREDENTIAL) envServer.credential = import.meta.env.VITE_TURN_CREDENTIAL
+      turnServersRef.current = [...(turnServersRef.current || []), envServer]
+      if (import.meta.env.DEV) console.log('[WebRTC] Loaded TURN from VITE env')
+    }
+  }, [])
+
+  const getPeerConfig = useCallback((initiator = false) => {
+    const rawTurn = turnServersRef.current || []
+    const normalizedTurn = rawTurn.map(s => {
+      if (!s) return null
+      const urls = s.urls || s.url
+      if (!urls) return null
+      const item = { urls }
+      if (s.username) item.username = s.username
+      if (s.credential) item.credential = s.credential
+      return item
+    }).filter(Boolean)
+
+    const iceServers = [...DEFAULT_STUN_SERVERS, ...normalizedTurn]
+    return {
+      initiator,
+      trickle: true,
+      config: {
+        iceServers,
+        iceCandidatePoolSize: 2
+      }
+    }
+  }, [])
 
   const sendTypingEvent = useCallback((isTyping, recipientId = null) => {
     const targetId = recipientId || chatOpen
@@ -279,6 +726,26 @@ export default function App() {
       isTyping
     }))
   }, [chatOpen])
+
+  const handleFileOfferRef = useRef(handleFileOffer)
+  const handleFileAcceptRef = useRef(handleFileAccept)
+  const handleFileChunkRef = useRef(handleFileChunk)
+  const handleFileCompleteRef = useRef(handleFileComplete)
+  const handleFileErrorRef = useRef(handleFileError)
+  const getPeerConfigRef = useRef(getPeerConfig)
+  const addSystemMessageRef = useRef(addSystemMessage)
+  const loadReceivedFilesRef = useRef(loadReceivedFiles)
+
+  useEffect(() => {
+    handleFileOfferRef.current = handleFileOffer
+    handleFileAcceptRef.current = handleFileAccept
+    handleFileChunkRef.current = handleFileChunk
+    handleFileCompleteRef.current = handleFileComplete
+    handleFileErrorRef.current = handleFileError
+    getPeerConfigRef.current = getPeerConfig
+    addSystemMessageRef.current = addSystemMessage
+    loadReceivedFilesRef.current = loadReceivedFiles
+  })
 
   const stopTyping = useCallback(() => {
     const state = typingStateRef.current
@@ -314,18 +781,6 @@ export default function App() {
     }, 1500)
   }, [chatOpen, sendTypingEvent, stopTyping])
 
-
-
-  const loadReceivedFiles = useCallback(async () => {
-    try {
-      const files = await getAllReceivedFiles()
-      const sorted = [...files].sort((a, b) => b.receivedAt - a.receivedAt)
-      setReceivedFiles(sorted)
-    } catch (err) {
-      if (import.meta.env.DEV) console.error('[store] failed to load received files:', err)
-    }
-  }, [])
-
   const handleDownloadFile = useCallback(async (id) => {
     try {
       const file = await getReceivedFile(id)
@@ -358,8 +813,21 @@ export default function App() {
   }, [loadReceivedFiles])
 
   useEffect(() => {
-    loadReceivedFiles()
-  }, [loadReceivedFiles])
+    let active = true
+    getAllReceivedFiles()
+      .then(files => {
+        if (active) {
+          const sorted = [...files].sort((a, b) => b.receivedAt - a.receivedAt)
+          setReceivedFiles(sorted)
+        }
+      })
+      .catch(err => {
+        if (import.meta.env.DEV) console.error('[store] failed to load received files:', err)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -383,11 +851,22 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const preventDragDefaults = (e) => e.preventDefault()
-    window.addEventListener('dragover', preventDragDefaults)
-    window.addEventListener('drop', preventDragDefaults)
+    fetchTurnServers()
+  }, [fetchTurnServers])
+
+  useEffect(() => {
+    const preventDragDefaults = (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    window.addEventListener('dragenter', preventDragDefaults, false)
+    window.addEventListener('dragover', preventDragDefaults, false)
+    window.addEventListener('dragleave', preventDragDefaults, false)
+    window.addEventListener('drop', preventDragDefaults, false)
     return () => {
+      window.removeEventListener('dragenter', preventDragDefaults)
       window.removeEventListener('dragover', preventDragDefaults)
+      window.removeEventListener('dragleave', preventDragDefaults)
       window.removeEventListener('drop', preventDragDefaults)
     }
   }, [])
@@ -434,29 +913,6 @@ export default function App() {
   useEffect(() => {
     chatOpenRef.current = chatOpen
   }, [chatOpen])
-
-  const addSystemMessage = useCallback((userId, type, fileName, fileSize) => {
-    if (!userId) return
-    setChatMessages(prev => {
-      const userMessages = prev[userId] || []
-      return {
-        ...prev,
-        [userId]: [...userMessages, {
-          type: 'system',
-          systemType: type,
-          fileName,
-          fileSize,
-          timestamp: Date.now()
-        }]
-      }
-    })
-    if (chatOpenRef.current !== userId) {
-      setUnreadCount(prev => ({
-        ...prev,
-        [userId]: (prev[userId] || 0) + 1
-      }))
-    }
-  }, [])
 
   useEffect(() => {
     nameRef.current = name
@@ -649,18 +1105,25 @@ export default function App() {
             }
 
             if (import.meta.env.DEV) console.log('[peer] create receiver for', from)
-            const peer = new Peer({
-              ...PEER_CONFIG,
-              config: PEER_CONFIG.config
-            })
+            const peer = new Peer(getPeerConfigRef.current(false))
             receiverPeerRef.current = peer
             receiverPeerSourceRef.current = from
             if (import.meta.env.DEV) console.log('[file-recv] receiver peer created for', from)
             attachIceDiagnostics(peer, 'receiver')
+
+            let receiverDisconnectTimer = null
+            const clearReceiverDisconnectTimer = () => {
+              if (receiverDisconnectTimer) {
+                clearTimeout(receiverDisconnectTimer)
+                receiverDisconnectTimer = null
+              }
+            }
+
             const failReceiverPeer = (reason) => {
               if (receiverPeerRef.current !== peer || peer.destroyed) return
               if (import.meta.env.DEV) console.warn('[file-recv] peer failed:', reason)
               clearReceiverConnectTimeout()
+              clearReceiverDisconnectTimer()
               delete pendingIceCandidatesRef.current[from]
               receiverPeerRef.current = null
               receiverPeerSourceRef.current = null
@@ -668,6 +1131,29 @@ export default function App() {
               if (!recvStateRef.current) {
                 setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
               }
+            }
+
+            const pcRecv = peer._pc
+            if (pcRecv) {
+              pcRecv.addEventListener('iceconnectionstatechange', () => {
+                const state = pcRecv.iceConnectionState
+                if (receiverPeerRef.current !== peer || peer.destroyed) return
+                if (state === 'connected' || state === 'completed') {
+                  clearReceiverDisconnectTimer()
+                } else if (state === 'disconnected') {
+                  if (import.meta.env.DEV) console.log('[file-recv] ICE disconnected, waiting 7s grace period for mobile recovery...')
+                  clearReceiverDisconnectTimer()
+                  receiverDisconnectTimer = setTimeout(() => {
+                    if (receiverPeerRef.current === peer && !peer.destroyed && pcRecv.iceConnectionState === 'disconnected') {
+                      if (import.meta.env.DEV) console.log('[file-recv] Disconnect grace period expired without recovery')
+                      failReceiverPeer('ice-disconnected-timeout')
+                    }
+                  }, 7000)
+                } else if (state === 'failed') {
+                  clearReceiverDisconnectTimer()
+                  failReceiverPeer('ice-failed')
+                }
+              })
             }
 
               peer.on('signal', (answer) => {
@@ -865,12 +1351,26 @@ export default function App() {
             }
           })
 
-          if (chatOpen !== senderId) {
+          if (chatOpenRef.current !== senderId) {
             setUnreadCount(prev => ({
               ...prev,
               [senderId]: (prev[senderId] || 0) + 1
             }))
           }
+        } else if (message.type === 'file-offer') {
+          if (import.meta.env.DEV) console.log('[ws-transfer] file-offer from:', message.from)
+          handleFileOfferRef.current(message)
+        } else if (message.type === 'file-accept') {
+          if (import.meta.env.DEV) console.log('[ws-transfer] file-accept from:', message.from)
+          handleFileAcceptRef.current(message)
+        } else if (message.type === 'file-chunk') {
+          handleFileChunkRef.current(message)
+        } else if (message.type === 'file-complete') {
+          if (import.meta.env.DEV) console.log('[ws-transfer] file-complete from:', message.from)
+          handleFileCompleteRef.current(message)
+        } else if (message.type === 'file-error') {
+          if (import.meta.env.DEV) console.log('[ws-transfer] file-error from:', message.from)
+          handleFileErrorRef.current(message)
         }
       }
 
@@ -892,12 +1392,20 @@ export default function App() {
       state.finalized = true
       if (import.meta.env.DEV) console.log('[file-recv] finalizing, total:', state.received, 'expected:', state.size)
 
+      if (state.size != null && state.received !== state.size) {
+        if (import.meta.env.DEV) console.error('[file-recv] size mismatch:', state.received, '!==', state.size)
+        setError('Berkas tidak lengkap saat transfer. Pengiriman dibatalkan.')
+        recvStateRef.current = null
+        setReceiving(null)
+        return
+      }
+
       const blob = new Blob(state.chunks, { type: state.mime })
       state.chunks = []
       const receivedChecksum = await sha256Hex(blob)
       if (import.meta.env.DEV) console.log('[file-recv] checksum match:', state.checksum ? receivedChecksum === state.checksum : 'no checksum')
       if (state.checksum && receivedChecksum !== state.checksum) {
-        setError('Berkas rusak saat transfer. Pengiriman dibatalkan.')
+        setError('Berkas rusak saat transfer. Checksum SHA-256 tidak cocok.')
         recvStateRef.current = null
         setReceiving(null)
         return
@@ -915,7 +1423,7 @@ export default function App() {
           const next = [savedRecord, ...prev.filter(f => f.id !== savedRecord.id)]
           return next
         })
-        await loadReceivedFiles()
+        await loadReceivedFilesRef.current()
         setShowDownloadPanel(true)
         setNotify({ type: 'info', message: `Berkas "${state.name}" diterima. Tersimpan di notifikasi.` })
         setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
@@ -924,7 +1432,7 @@ export default function App() {
 
         const senderId = state.fromId || receiverPeerSourceRef.current
         if (senderId) {
-          addSystemMessage(senderId, 'received', state.name, state.size)
+          addSystemMessageRef.current(senderId, 'received', state.name, state.size)
         }
       } catch {
         setNotify({ type: 'error', message: `Gagal menyimpan berkas "${state.name}".` })
@@ -981,8 +1489,9 @@ export default function App() {
   }, [joined])
 
   useEffect(() => {
+    const urls = urlCacheRef.current
     return () => {
-      urlCacheRef.current.forEach(url => URL.revokeObjectURL(url))
+      urls.forEach(url => URL.revokeObjectURL(url))
     }
   }, [])
 
@@ -1006,7 +1515,7 @@ export default function App() {
         setLoginError('PIN salah. Silakan coba lagi.')
         return
       }
-    } catch (err) {
+    } catch {
       setLoginError('Tidak dapat terhubung ke server. Silakan coba lagi.')
       return
     }
@@ -1047,7 +1556,10 @@ export default function App() {
     transferCancelRefs.current[fileId] = () => {
       if (settled) return
       settled = true
+      clearConnectTimeout()
       clearBpTimer()
+      clearDisconnectTimer()
+      clearRetryTimer()
       if (senderPeerRef.current) {
         senderPeerRef.current.destroy()
         senderPeerRef.current = null
@@ -1073,6 +1585,23 @@ export default function App() {
     let connected = false
     let transferDone = false
     let transferStarted = false
+    let disconnectTimer = null
+    let retryTimer = null
+    let isRetrying = false
+
+    const clearRetryTimer = () => {
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+        retryTimer = null
+      }
+    }
+
+    const clearDisconnectTimer = () => {
+      if (disconnectTimer) {
+        clearTimeout(disconnectTimer)
+        disconnectTimer = null
+      }
+    }
 
     const clearConnectTimeout = () => {
       if (connectTimeout) {
@@ -1084,6 +1613,8 @@ export default function App() {
     const cleanupPeer = (peer) => {
       clearConnectTimeout()
       clearBpTimer()
+      clearDisconnectTimer()
+      clearRetryTimer()
       if (senderPeerRef.current === peer) {
         delete pendingIceCandidatesRef.current[recipient.id]
         senderPeerRef.current = null
@@ -1097,6 +1628,8 @@ export default function App() {
       settled = true
       clearConnectTimeout()
       clearBpTimer()
+      clearDisconnectTimer()
+      clearRetryTimer()
       if (activePeer) cleanupPeer(activePeer)
 
       if (success) {
@@ -1115,30 +1648,106 @@ export default function App() {
       resolve(success)
     }
 
-    const failBeforeConnect = (peer, _message) => {
-      if (senderPeerRef.current !== peer || settled || connected || transferStarted) return
-      cleanupPeer(peer)
-      if (retryCount < MAX_PEER_RETRIES) {
-        retryCount += 1
-        createPeerWithTimeout()
+    const failBeforeConnect = async (peer, reason) => {
+      if (import.meta.env.DEV) console.log(`[WebRTC] failBeforeConnect (${reason}), attempt ${retryCount + 1}/${MAX_PEER_RETRIES + 1}`)
+      
+      if (senderPeerRef.current !== peer || settled || connected || transferStarted || isRetrying) {
         return
       }
-      setError('Koneksi P2P langsung gagal. Perangkat mungkin berada di jaringan yang membatasi koneksi langsung.')
-      finish(false)
+      isRetrying = true
+
+      cleanupPeer(peer)
+
+      if (retryCount < MAX_PEER_RETRIES) {
+        retryCount += 1
+        if (import.meta.env.DEV) console.log(`[WebRTC] [sender] retry attempt ${retryCount + 1}/${MAX_PEER_RETRIES + 1} starting in 1000ms...`)
+        setSendingFiles(prev => prev.map(f =>
+          f.id === fileId ? { ...f, status: 'connecting', attempt: retryCount + 1 } : f
+        ))
+        clearRetryTimer()
+        retryTimer = setTimeout(() => {
+          retryTimer = null
+          isRetrying = false
+          if (!settled && !connected && !transferStarted) {
+            createPeerWithTimeout()
+          }
+        }, 1000)
+        return
+      }
+      
+      isRetrying = false
+      if (import.meta.env.DEV) console.log('[WebRTC] [sender] retry attempts exhausted, switching to fallback')
+      setError(null)
+      setSendingFiles(prev => prev.map(f =>
+        f.id === fileId ? { ...f, status: 'sending', connected: false, fallback: true } : f
+      ))
+      try {
+        const wsState = socketRef.current?.readyState
+        const wsStateStr = wsState === WebSocket.OPEN ? 'OPEN' : wsState === WebSocket.CONNECTING ? 'CONNECTING' : wsState === WebSocket.CLOSING ? 'CLOSING' : wsState === WebSocket.CLOSED ? 'CLOSED' : 'UNKNOWN'
+        if (import.meta.env.DEV) console.log(`[ws-transfer] fallback started, socket readyState: ${wsState} (${wsStateStr})`)
+        
+        await sendFileViaWebSocket(file, recipient, fileId)
+        if (import.meta.env.DEV) console.log('[ws-transfer] fallback completed successfully')
+        finish(true)
+      } catch (err) {
+        if (import.meta.env.DEV) console.error('[file-send] WebSocket fallback FAILED:', err.message || err)
+        setError('Transfer gagal. Koneksi antar perangkat tidak dapat dibuat.')
+        finish(false)
+      }
     }
 
     const createPeerWithTimeout = () => {
-      if (settled) return
-      if (import.meta.env.DEV) console.log('[peer] create sender for', recipient.id)
-      const peer = new Peer({
-        ...PEER_CONFIG,
-        initiator: true,
-        config: PEER_CONFIG.config
-      })
+      if (settled || connected || transferStarted) {
+        return
+      }
+      isRetrying = false
+      if (import.meta.env.DEV) console.log(`[WebRTC] attempt ${retryCount + 1}/${MAX_PEER_RETRIES + 1} for file ${file.name}`)
+      
+      const peer = new Peer(getPeerConfig(true))
       activePeer = peer
       senderPeerRef.current = peer
       senderPeerTargetRef.current = recipient.id
+      
+      if (import.meta.env.DEV) console.log('[file-send] peer created, attaching diagnostics')
       attachIceDiagnostics(peer, 'sender')
+      
+      const pc = peer._pc
+      if (import.meta.env.DEV) console.log('[file-send] peer._pc exists:', !!pc)
+      if (pc) {
+        pc.addEventListener('iceconnectionstatechange', () => {
+          const state = pc.iceConnectionState
+          if (import.meta.env.DEV) console.log(`[file-send] iceConnectionState: ${state}`)
+          if (senderPeerRef.current !== peer || peer.destroyed) return
+
+          if (state === 'connected' || state === 'completed') {
+            clearDisconnectTimer()
+          } else if (state === 'disconnected') {
+            if (import.meta.env.DEV) console.log('[file-send] ICE disconnected, waiting 7s grace period for mobile recovery...')
+            clearDisconnectTimer()
+            disconnectTimer = setTimeout(() => {
+              if (senderPeerRef.current === peer && !peer.destroyed && pc.iceConnectionState === 'disconnected') {
+                if (import.meta.env.DEV) console.log('[file-send] Disconnect grace period expired without recovery')
+                if (!connected && !transferStarted && !settled) {
+                  failBeforeConnect(peer, 'ice-disconnected-timeout')
+                }
+              }
+            }, 7000)
+          } else if (state === 'failed') {
+            clearDisconnectTimer()
+            if (import.meta.env.DEV) console.log(`[file-send] ICE FAILED - checking conditions: connected=${connected} transferStarted=${transferStarted} settled=${settled}`)
+            if (!connected && !transferStarted && !settled) {
+              if (import.meta.env.DEV) console.log('[file-send] *** ICE failed detected, calling failBeforeConnect ***')
+              failBeforeConnect(peer, 'ice-failed')
+            } else {
+              if (import.meta.env.DEV) console.log('[file-send] ICE failed but blocked by flags')
+            }
+          }
+        })
+        if (import.meta.env.DEV) console.log('[file-send] ICE listener attached successfully')
+      } else {
+        if (import.meta.env.DEV) console.warn('[file-send] WARNING: peer._pc is undefined, ICE listener NOT attached')
+      }
+      
       const pending = pendingIceCandidatesRef.current[recipient.id]
       if (pending && pending.length > 0) {
         if (import.meta.env.DEV) console.log('[signal] flushing', pending.length, 'pending ICE candidates for sender from', recipient.id)
@@ -1258,9 +1867,17 @@ export default function App() {
       })
 
       peer.on('error', (err) => {
-        if (senderPeerRef.current !== peer || settled || transferDone) return
+        if (import.meta.env.DEV) console.log(`[peer] error event: ${err?.code || err?.name || 'unknown'}`)
+        if (import.meta.env.DEV) console.log(`[peer] error guards: peerMatch=${senderPeerRef.current === peer} settled=${settled} transferDone=${transferDone}`)
+        
+        if (senderPeerRef.current !== peer || settled || transferDone) {
+          if (import.meta.env.DEV) console.log('[peer] error handler blocked by guards')
+          return
+        }
+        
         if (import.meta.env.DEV) console.error('[peer] sender error:', err?.code || err?.name || 'unknown')
         if (!connected && !transferStarted) {
+          if (import.meta.env.DEV) console.log('[peer] error calling failBeforeConnect')
           failBeforeConnect(peer, 'error')
           return
         }
@@ -1269,9 +1886,17 @@ export default function App() {
       })
 
       peer.on('close', () => {
-        if (senderPeerRef.current !== peer || settled || transferDone) return
+        if (import.meta.env.DEV) console.log('[peer] close event')
+        if (import.meta.env.DEV) console.log(`[peer] close guards: peerMatch=${senderPeerRef.current === peer} settled=${settled} transferDone=${transferDone}`)
+        
+        if (senderPeerRef.current !== peer || settled || transferDone) {
+          if (import.meta.env.DEV) console.log('[peer] close handler blocked by guards')
+          return
+        }
+        
         if (import.meta.env.DEV) console.log('[peer] sender closed')
         if (!connected && !transferStarted) {
+          if (import.meta.env.DEV) console.log('[peer] close calling failBeforeConnect')
           failBeforeConnect(peer, 'close')
           return
         }
@@ -1279,12 +1904,13 @@ export default function App() {
       })
 
       connectTimeout = setTimeout(() => {
+        if (import.meta.env.DEV) console.log('[peer] connect timeout reached')
         failBeforeConnect(peer, 'timeout')
       }, PEER_CONNECT_TIMEOUT)
     }
 
     createPeerWithTimeout()
-  }), [addSystemMessage])
+  }), [addSystemMessage, getPeerConfig, sendFileViaWebSocket])
 
   const handleRename = () => {
     const newName = renameValue.trim()
@@ -1688,8 +2314,8 @@ export default function App() {
                       <div>
                         <span>
                           {transfer.status === 'queued' && 'Menunggu'}
-                          {transfer.status === 'connecting' && 'Menghubungkan'}
-                          {transfer.status === 'sending' && 'Mengirim berkas'}
+                          {transfer.status === 'connecting' && (transfer.attempt > 1 ? `Mencoba ulang koneksi (${transfer.attempt}/3)...` : 'Menghubungkan')}
+                          {transfer.status === 'sending' && (transfer.fallback ? 'Mengirim via Relay' : 'Mengirim berkas')}
                           {transfer.status === 'completed' && '✓ Selesai'}
                           {transfer.status === 'failed' && '✗ Gagal'}
                         </span>
@@ -1716,6 +2342,7 @@ export default function App() {
                         {speed && <span>{speed}</span>}
                         {eta && <span className="eta">Sisa {eta}</span>}
                         {transfer.connected && <span className="conn ok">Terhubung langsung</span>}
+                        {transfer.fallback && <span className="conn pulse">Koneksi Relay</span>}
                       </div>
                     </>
                   )}
@@ -1732,9 +2359,9 @@ export default function App() {
         )}
         {receiving && (
           <div className="progress-card">
-            <div className="progress-head"><div className="progress-label"><span className={`dot ${receiving?.connected ? 'ok' : 'pulse'}`} /><div><span>{receiving?.connected ? 'Menerima berkas' : 'Menunggu koneksi'}</span><b>{receiving?.name || 'Menyiapkan transfer'}</b></div></div><strong>{recvPercent}%</strong></div>
+            <div className="progress-head"><div className="progress-label"><span className={`dot ${receiving?.connected ? 'ok' : 'pulse'}`} /><div><span>{receiving?.connected ? 'Menerima berkas' : receiving?.fallback ? 'Menerima via Relay' : 'Menunggu koneksi'}</span><b>{receiving?.name || 'Menyiapkan transfer'}</b></div></div><strong>{recvPercent}%</strong></div>
             <div className="track"><div style={{ width: `${recvPercent}%` }} /></div>
-            <div className="progress-meta"><span>{formatSize(receiving.received)} dari {formatSize(receiving.size)}</span><span>{recvSpeed}</span>{recvETA && <span className="eta">Sisa {recvETA}</span>}<span className={`conn ${receiving?.connected ? 'ok' : 'pulse'}`}>{receiving?.connected ? 'Terhubung langsung' : 'Menghubungkan…'}</span></div>
+            <div className="progress-meta"><span>{formatSize(receiving.received)} dari {formatSize(receiving.size)}</span><span>{recvSpeed}</span>{recvETA && <span className="eta">Sisa {recvETA}</span>}<span className={`conn ${receiving?.connected ? 'ok' : 'pulse'}`}>{receiving?.connected ? 'Terhubung langsung' : receiving?.fallback ? 'Koneksi Relay' : 'Menghubungkan…'}</span></div>
           </div>
         )}
       </article>
@@ -1773,7 +2400,7 @@ export default function App() {
               )
             }
             return (
-              <div key={i} className={`chat-message ${msg.fromId === socketIdRef.current ? 'sent' : 'received'}`}>
+              <div key={i} className={`chat-message ${msg.fromId === socketId ? 'sent' : 'received'}`}>
                 <div className="chat-message-content">
                   <small className="chat-sender">{msg.from}</small>
                   <p>{msg.text}</p>
