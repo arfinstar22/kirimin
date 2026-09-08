@@ -95,10 +95,17 @@ export default {
     }
 
     if (url.pathname === '/ws') {
-      if (request.method !== 'GET' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+      if (request.method !== 'GET') {
+        return json({ error: 'Method not allowed' }, 405)
+      }
+
+      // Check for WebSocket upgrade
+      const upgrade = request.headers.get('upgrade');
+      if (upgrade?.toLowerCase() !== 'websocket') {
         return json({ error: 'WebSocket upgrade required' }, 426)
       }
 
+      console.log('[WS] Request received, forwarding to DO');
       const id = env.SIGNALING.idFromName('default')
       return env.SIGNALING.get(id).fetch(request)
     }
@@ -108,7 +115,9 @@ export default {
 }
 
 export class SignalingRoom {
-  constructor() {
+  constructor(state, env) {
+    this.state = state
+    this.env = env
     this.users = new Map()
     this.sockets = new Map()
   }
@@ -138,20 +147,34 @@ export class SignalingRoom {
       return json({ ok: true, reset: true })
     }
 
-    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+    // WebSocket Handshake
+    const upgrade = request.headers.get('upgrade');
+    console.log(`[DO-WS] Request received. Upgrade: ${upgrade}`);
+    
+    if (upgrade?.toLowerCase() !== 'websocket') {
       return new Response('WebSocket upgrade required', { status: 426 })
     }
 
     const pair = new WebSocketPair()
-    const [client, server] = Object.values(pair)
+    const client = pair[0]
+    const server = pair[1]
+    
     server.accept()
+    console.log('[DO-WS] Server accepted');
 
     const user = { socket: server, id: crypto.randomUUID(), name: null }
     this.sockets.set(server, user)
+    console.log('[DO-WS] Socket registered');
 
     server.addEventListener('message', (event) => this.handleMessage(user, event.data))
-    server.addEventListener('close', () => this.disconnect(user))
-    server.addEventListener('error', () => this.disconnect(user))
+    server.addEventListener('close', () => {
+      console.log('[DO-WS] Socket closed');
+      this.disconnect(user);
+    })
+    server.addEventListener('error', () => {
+      console.log('[DO-WS] Socket error');
+      this.disconnect(user);
+    })
 
     return new Response(null, { status: 101, webSocket: client })
   }

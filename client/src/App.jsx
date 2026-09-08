@@ -44,7 +44,6 @@ const WS_CHUNK_SIZE = 32 * 1024
 const WS_TRANSFER_TIMEOUT = 180000
 
 async function logIceStats(peer, label) {
-  if (!import.meta.env.DEV) return
   const pc = peer?._pc
   if (!pc) return
   try {
@@ -57,19 +56,19 @@ async function logIceStats(peer, label) {
         const remote = stats.get(report.remoteCandidateId)
         const localType = local?.candidateType || local?.type || 'unknown'
         const remoteType = remote?.candidateType || remote?.type || 'unknown'
-        console.log(`[WebRTC] [${label}] selected candidate pair: state=${report.state} protocol=${report.protocol || 'udp'} local=${localType} remote=${remoteType}`)
+        console.log(`[ICE] selected candidate pair (${label}): state=${report.state} protocol=${report.protocol || 'udp'} local=${localType} remote=${remoteType}`)
         if (localType === 'relay' || remoteType === 'relay') {
-          console.log(`[WebRTC] [${label}] TURN relay`)
+          console.log(`[ICE] TURN relay active (${label})`)
         } else {
-          console.log(`[WebRTC] [${label}] direct P2P (${localType} <-> ${remoteType})`)
+          console.log(`[ICE] direct P2P active (${label}: ${localType} <-> ${remoteType})`)
         }
       }
     })
     if (!pairFound) {
-      console.log(`[WebRTC] [${label}] no active candidate pair yet`)
+      console.log(`[ICE] no active candidate pair yet (${label})`)
     }
   } catch (e) {
-    console.warn(`[WebRTC] [${label}] failed to get stats:`, e?.message || e)
+    console.warn(`[ICE] failed to get stats (${label}):`, e?.message || e)
   }
 }
 
@@ -83,47 +82,60 @@ function attachIceDiagnostics(peer, role) {
     let relayFound = false
 
     pc.addEventListener('icegatheringstatechange', () => {
-      if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE gathering state: ${pc.iceGatheringState}`)
+      console.log(`[ICE] gathering state: ${pc.iceGatheringState} (${role})`)
       if (pc.iceGatheringState === 'complete') {
-        if (import.meta.env.DEV) {
-          console.log(`[WebRTC] [${role}] ICE gathering complete: host=${hostFound} srflx=${srflxFound} relay=${relayFound}`)
-          if (relayFound) {
-            console.log(`[WebRTC] [${role}] TURN relay candidate discovered`)
-          } else {
-            console.log(`[WebRTC] [${role}] direct P2P candidates only (no TURN relay)`)
-          }
+        console.log(`[ICE] gathering complete (${role}): host=${hostFound} srflx=${srflxFound} relay=${relayFound}`)
+        if (relayFound) {
+          console.log(`[ICE] relay candidate discovered (${role})`)
         }
         logIceStats(peer, role)
       }
     })
 
     pc.addEventListener('iceconnectionstatechange', () => {
-      if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE connection state: ${pc.iceConnectionState}`)
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      const state = pc.iceConnectionState
+      console.log(`[ICE] connection state: ${state} (${role})`)
+      if (state === 'checking') {
+        console.log(`[ICE] checking (${role})`)
+      } else if (state === 'connected') {
+        console.log(`[ICE] connected (${role})`)
         logIceStats(peer, role)
+      } else if (state === 'completed') {
+        console.log(`[ICE] completed (${role})`)
+        logIceStats(peer, role)
+      } else if (state === 'failed') {
+        console.log(`[ICE] failed (${role})`)
+      } else if (state === 'disconnected') {
+        console.log(`[ICE] disconnected (${role})`)
       }
     })
 
     pc.addEventListener('signalingstatechange', () => {
-      if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] signaling state: ${pc.signalingState}`)
+      console.log(`[WEBRTC] signaling state: ${pc.signalingState} (${role})`)
     })
 
     if (typeof pc.connectionState === 'string') {
       pc.addEventListener('connectionstatechange', () => {
-        if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] connection state: ${pc.connectionState}`)
-        if (pc.connectionState === 'connected' || pc.connectionState === 'completed') {
-          logIceStats(peer, role)
+        console.log(`[WEBRTC] connection state: ${pc.connectionState} (${role})`)
+        if (pc.connectionState === 'connected') {
+          console.log(`[WEBRTC] peer connected (${role})`)
+        } else if (pc.connectionState === 'disconnected') {
+          console.log(`[WEBRTC] peer disconnected (${role})`)
+        } else if (pc.connectionState === 'closed') {
+          console.log(`[WEBRTC] peer closed (${role})`)
+        } else if (pc.connectionState === 'failed') {
+          console.log(`[WEBRTC] peer error (${role})`)
         }
       })
     }
 
     pc.addEventListener('icecandidateerror', (e) => {
-      if (import.meta.env.DEV) console.warn(`[WebRTC] [${role}] ICE candidate error: url=${e.url ?? 'none'} code=${e.errorCode ?? 'none'} text=${e.errorText ?? 'none'}`)
+      console.warn(`[ICE] candidate error (${role}): url=${e.url ?? 'none'} code=${e.errorCode ?? 'none'} text=${e.errorText ?? 'none'}`)
     })
 
     pc.addEventListener('icecandidate', (e) => {
       if (!e.candidate) {
-        if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE gathering end (null candidate)`)
+        console.log(`[ICE] gathering end (null candidate) (${role})`)
         return
       }
       const type = e.candidate.type || 'unknown'
@@ -132,7 +144,7 @@ function attachIceDiagnostics(peer, role) {
       else if (type === 'host') hostFound = true
 
       const proto = e.candidate.protocol || 'udp'
-      if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE candidate type: ${type} protocol=${proto}`)
+      console.log(`[ICE] candidate: type=${type} protocol=${proto} (${role})`)
     })
 
     // Safe addIceCandidate wrapper to protect simple-peer-light from ERR_ADD_ICE_CANDIDATE destruction
@@ -140,15 +152,14 @@ function attachIceDiagnostics(peer, role) {
     pc.addIceCandidate = async function (candidate) {
       try {
         const res = await origAddIceCandidate(candidate)
-        if (import.meta.env.DEV) console.log(`[WebRTC] [${role}] ICE candidate added`)
         return res
       } catch (err) {
-        if (import.meta.env.DEV) console.warn(`[WebRTC] [${role}] non-fatal candidate error ignored:`, err?.message || err)
+        console.warn(`[ICE] non-fatal candidate error ignored (${role}):`, err?.message || err)
         return Promise.resolve()
       }
     }
   } catch (err) {
-    if (import.meta.env.DEV) console.warn('[WebRTC] diagnostics attachment failed:', err)
+    console.warn('[WEBRTC] diagnostics attachment failed:', err)
   }
 }
 
@@ -928,6 +939,7 @@ export default function App() {
     const MAX_RECONNECT_DELAY = 30000
     const BASE_DELAY = 1000
     let receiverConnectTimeout = null
+    let receiverCompleted = false
 
     const clearReceiverConnectTimeout = () => {
       if (receiverConnectTimeout) {
@@ -937,10 +949,11 @@ export default function App() {
     }
 
     const scheduleReconnect = () => {
-      if (!shouldReconnectRef.current) return
+      if (!shouldReconnectRef.current || forceLogoutReceivedRef.current) return
 
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
       }
 
       const attempt = reconnectAttemptRef.current
@@ -948,7 +961,7 @@ export default function App() {
       const jitter = Math.random() * 200
       const finalDelay = delay + jitter
 
-      if (import.meta.env.DEV) console.log(`[ws] reconnect scheduled in ${Math.round(finalDelay)}ms (attempt ${attempt + 1})`)
+      console.log(`[WS] reconnect scheduled: ${Math.round(finalDelay)}ms (attempt ${attempt + 1})`)
       setWsState('reconnecting')
 
       reconnectTimerRef.current = setTimeout(() => {
@@ -958,14 +971,19 @@ export default function App() {
       }, finalDelay)
     }
 
-    const handleSocketClosed = (ws) => {
+    const handleSocketClosed = (ws, event) => {
       if (socketRef.current !== ws) return
-      if (import.meta.env.DEV) console.log('[ws] closed or error, cleaning up socket')
+      console.log('[WS] closed, cleaning up socket')
 
       socketRef.current = null
       wsRef.current = null
 
-      if (shouldReconnectRef.current) {
+      if (event?.code === 4001 || event?.code === 4000) {
+        setWsState('disconnected')
+        return
+      }
+
+      if (shouldReconnectRef.current && !forceLogoutReceivedRef.current) {
         scheduleReconnect()
       } else {
         setWsState('disconnected')
@@ -973,16 +991,29 @@ export default function App() {
     }
 
     const connect = () => {
-      if (!shouldReconnectRef.current) return
+      if (!shouldReconnectRef.current || forceLogoutReceivedRef.current) return
 
-      const existing = socketRef.current
-      if (existing && (existing.readyState === WebSocket.CONNECTING || existing.readyState === WebSocket.OPEN)) {
-        return
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
       }
 
-      if (forceLogoutReceivedRef.current) return
+      const existing = socketRef.current
+      if (existing) {
+        if (existing.readyState === WebSocket.CONNECTING || existing.readyState === WebSocket.OPEN) {
+          return
+        }
+        existing.onopen = null
+        existing.onmessage = null
+        existing.onerror = null
+        existing.onclose = null
+        try { existing.close() } catch { /* ignore */ }
+        socketRef.current = null
+        wsRef.current = null
+      }
 
-      if (import.meta.env.DEV) console.log('[ws] connecting...')
+      console.log('[WS] URL:', SIGNALING_URL)
+      console.log('[WS] connecting')
       setWsState('connecting')
 
       const ws = new WebSocket(SIGNALING_URL)
@@ -998,7 +1029,7 @@ export default function App() {
           ws.close()
           return
         }
-        if (import.meta.env.DEV) console.log('[ws] connected')
+        console.log('[WS] open')
         reconnectAttemptRef.current = 0
         setWsState('connected')
         ws.send(JSON.stringify({ type: 'register', name: nameRef.current }))
@@ -1015,7 +1046,7 @@ export default function App() {
         }
 
         if (message.type === 'registered') {
-          if (import.meta.env.DEV) console.log('[ws] registered:', message.id)
+          console.log('[WS] registered:', message.id)
           setSocketId(message.id)
         } else if (message.type === 'users') {
           const currentSocketId = socketIdRef.current
@@ -1065,13 +1096,13 @@ export default function App() {
         } else if (message.type === 'offer' || message.type === 'answer' || message.type === 'ice-candidate') {
           const from = message.from
           const signal = message.data
-          if (import.meta.env.DEV) console.log('[signal] from', from, 'type:', signal?.type)
           const fromUser = usersRef.current.find(u => u.id === from)?.name || 'Seseorang'
+          console.log(`[WEBRTC] signal received: ${message.type} from ${fromUser}`)
 
           try {
             if (message.type === 'answer') {
               if (senderPeerRef.current && !senderPeerRef.current.destroyed && senderPeerTargetRef.current === from) {
-                if (import.meta.env.DEV) console.log('[signal] answer from', from, '→ sender')
+                console.log(`[WEBRTC] routing answer to sender peer`)
                 senderPeerRef.current.signal(signal)
               }
               return
@@ -1079,17 +1110,17 @@ export default function App() {
 
             if (message.type === 'ice-candidate') {
               if (receiverPeerRef.current && !receiverPeerRef.current.destroyed && receiverPeerSourceRef.current === from) {
-                if (import.meta.env.DEV) console.log('[signal] ICE from', from, '→ receiver')
+                console.log('[ICE] candidate received: routed to receiver peer')
                 try { receiverPeerRef.current.signal(signal) } catch { /* ignore */ }
                 return
               }
               if (senderPeerRef.current && !senderPeerRef.current.destroyed && senderPeerTargetRef.current === from) {
-                if (import.meta.env.DEV) console.log('[signal] ICE from', from, '→ sender')
+                console.log('[ICE] candidate received: routed to sender peer')
                 try { senderPeerRef.current.signal(signal) } catch { /* ignore */ }
                 return
               }
               if (from) {
-                if (import.meta.env.DEV) console.log('[signal] ICE queued from', from)
+                console.log('[ICE] candidate received: queued for', from)
                 const queue = pendingIceCandidatesRef.current[from] || []
                 queue.push(signal)
                 pendingIceCandidatesRef.current[from] = queue
@@ -1104,11 +1135,12 @@ export default function App() {
               receiverPeerSourceRef.current = null
             }
 
-            if (import.meta.env.DEV) console.log('[peer] create receiver for', from)
+            console.log(`[WEBRTC] creating peer (receiver) for ${fromUser}`)
+            console.log('[FILE] incoming transfer')
+            console.log('[WEBRTC] peer connection created')
             const peer = new Peer(getPeerConfigRef.current(false))
             receiverPeerRef.current = peer
             receiverPeerSourceRef.current = from
-            if (import.meta.env.DEV) console.log('[file-recv] receiver peer created for', from)
             attachIceDiagnostics(peer, 'receiver')
 
             let receiverDisconnectTimer = null
@@ -1121,7 +1153,7 @@ export default function App() {
 
             const failReceiverPeer = (reason) => {
               if (receiverPeerRef.current !== peer || peer.destroyed) return
-              if (import.meta.env.DEV) console.warn('[file-recv] peer failed:', reason)
+              console.warn('[WEBRTC] receiver peer failed:', reason)
               clearReceiverConnectTimeout()
               clearReceiverDisconnectTimer()
               delete pendingIceCandidatesRef.current[from]
@@ -1141,11 +1173,11 @@ export default function App() {
                 if (state === 'connected' || state === 'completed') {
                   clearReceiverDisconnectTimer()
                 } else if (state === 'disconnected') {
-                  if (import.meta.env.DEV) console.log('[file-recv] ICE disconnected, waiting 7s grace period for mobile recovery...')
+                  console.log('[ICE] disconnected, waiting 7s grace period for recovery...')
                   clearReceiverDisconnectTimer()
                   receiverDisconnectTimer = setTimeout(() => {
                     if (receiverPeerRef.current === peer && !peer.destroyed && pcRecv.iceConnectionState === 'disconnected') {
-                      if (import.meta.env.DEV) console.log('[file-recv] Disconnect grace period expired without recovery')
+                      console.log('[ICE] Disconnect grace period expired without recovery')
                       failReceiverPeer('ice-disconnected-timeout')
                     }
                   }, 7000)
@@ -1158,102 +1190,115 @@ export default function App() {
 
               peer.on('signal', (answer) => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
-                if (import.meta.env.DEV) console.log('[peer] answering')
                 const s = socketRef.current
                 if (s && s.readyState === WebSocket.OPEN) {
-                  s.send(JSON.stringify({ type: answer.type === 'candidate' ? 'ice-candidate' : (answer.type || 'ice-candidate'), target: from, data: answer }))
+                  const type = answer.type === 'candidate' ? 'ice-candidate' : (answer.type || 'ice-candidate')
+                  console.log(`[WEBRTC] signal sent: ${type} to ${fromUser}`)
+                  if (type === 'ice-candidate') {
+                    console.log(`[ICE] candidate sent: to ${fromUser}`)
+                  }
+                  s.send(JSON.stringify({ type, target: from, data: answer }))
                 }
               })
 
               peer.on('connect', () => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
                 clearReceiverConnectTimeout()
-                if (import.meta.env.DEV) console.log('[file-recv] peer connected!')
+                console.log('[WEBRTC] peer connected')
+                console.log('[FILE] data channel OPEN')
                 setReceiving(r => r ? { ...r, connected: true } : r)
                 setError(null)
               })
 
               peer.on('data', (data) => {
                 if (receiverPeerRef.current !== peer || peer.destroyed) return
-                chain = chain.then(async () => {
-                  if (typeof data === 'string') {
-                    try {
-                       const msg = JSON.parse(data)
-                       if (msg.type === 'file-meta') {
-                          if (import.meta.env.DEV) console.log('[file-recv] meta received:', msg.name, msg.size, 'bytes')
-                          const pending = recvStateRef.current?.pendingChunks || []
-                         recvStateRef.current = {
-                           name: msg.name,
-                           size: msg.size,
-                           mime: msg.mime || 'application/octet-stream',
-                           checksum: msg.checksum,
-                           fromName: msg.senderName || fromUser,
-                           fromId: msg.senderId || from,
-                           received: 0,
-                           chunks: [...pending],
-                           startTime: Date.now(),
-                           speed: 0,
-                           connected: true,
-                           complete: false
-                         }
-                         pending.forEach(chunk => {
-                           recvStateRef.current.received += chunk.byteLength
-                         })
-                         setReceiving(recvStateRef.current)
-                         return
-                       }
-                      if (msg.type === 'file-end') {
-                        if (import.meta.env.DEV) console.log('[file-recv] file-end received, total received:', recvStateRef.current?.received, 'bytes')
-                        if (recvStateRef.current) {
-                          recvStateRef.current.complete = true
-                          await finalizeTransfer()
-                        }
-                        return
-                      }
-                    } catch {
-                    }
-                  }
 
-                  if (data instanceof ArrayBuffer || data instanceof Uint8Array || ArrayBuffer.isView(data)) {
-                    const chunk = data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
-                    if (recvStateRef.current) {
-                      recvStateRef.current.chunks.push(chunk)
-                      recvStateRef.current.received += chunk.byteLength
-
-                      if (import.meta.env.DEV && recvStateRef.current.received % (1024 * 1024) < chunk.byteLength) {
-                        console.log('[file-recv] progress:', recvStateRef.current.received, '/', recvStateRef.current.size)
-                      }
-
-                      const elapsed = (Date.now() - recvStateRef.current.startTime) / 1000
-                      recvStateRef.current.speed = elapsed > 0 ? recvStateRef.current.received / elapsed : 0
-
-                      const RECEIVER_PROGRESS_UPDATE_BYTES = 1024 * 1024
-                      const received = recvStateRef.current.received
-                      const size = recvStateRef.current.size
-                      const lastUpdate = recvStateRef.current.lastProgressUpdate || 0
-                      if (received - lastUpdate >= RECEIVER_PROGRESS_UPDATE_BYTES || received >= size || recvStateRef.current.complete) {
-                        recvStateRef.current.lastProgressUpdate = received
-                        setReceiving({ ...recvStateRef.current })
-                      }
-
-                      if (recvStateRef.current.received >= recvStateRef.current.size && recvStateRef.current.complete) {
-                        await finalizeTransfer()
-                      }
-                    } else {
+                if (typeof data === 'string') {
+                  console.log('[FILE] data event type: string')
+                  try {
+                    const msg = JSON.parse(data)
+                    if (msg.type === 'file-meta') {
+                      console.log('[FILE] metadata received')
+                      const pending = recvStateRef.current?.pendingChunks || []
                       recvStateRef.current = {
-                        pendingChunks: [chunk],
-                        name: null, size: null, mime: null, checksum: null,
-                        fromName: fromUser, fromId: from, received: chunk.byteLength, chunks: [],
-                        startTime: Date.now(), speed: 0, connected: true, complete: false
+                        name: msg.name,
+                        size: msg.size,
+                        mime: msg.mime || 'application/octet-stream',
+                        checksum: msg.checksum,
+                        fromName: msg.senderName || fromUser,
+                        fromId: msg.senderId || from,
+                        received: 0,
+                        chunks: [...pending],
+                        startTime: Date.now(),
+                        speed: 0,
+                        connected: true,
+                        complete: false,
+                        finalized: false
                       }
+                      pending.forEach(chunk => {
+                        recvStateRef.current.received += chunk.byteLength
+                      })
+                      setReceiving({ ...recvStateRef.current })
+                      return
                     }
+                    if (msg.type === 'file-end') {
+                      console.log('[FILE] file-end received')
+                      if (recvStateRef.current) {
+                        recvStateRef.current.complete = true
+                        if (recvStateRef.current.received >= recvStateRef.current.size) {
+                          console.log('[FILE] all chunks received')
+                          finalizeTransfer()
+                        }
+                      }
+                      return
+                    }
+                  } catch (err) {
+                    console.warn('[FILE] error parsing text message:', err)
                   }
-                })
+                  return
+                }
+
+                if (data instanceof ArrayBuffer || data instanceof Uint8Array || ArrayBuffer.isView(data)) {
+                  console.log('[FILE] data event type: binary')
+                  const chunk = data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+                  if (!recvStateRef.current) {
+                    recvStateRef.current = {
+                      pendingChunks: [chunk],
+                      name: null, size: null, mime: null, checksum: null,
+                      fromName: fromUser, fromId: from, received: chunk.byteLength, chunks: [],
+                      startTime: Date.now(), speed: 0, connected: true, complete: false, finalized: false
+                    }
+                    return
+                  }
+
+                  const state = recvStateRef.current
+                  state.chunks.push(chunk)
+                  state.received += chunk.byteLength
+
+                  const totalExpectedChunks = state.size ? Math.ceil(state.size / 16384) : '?'
+                  console.log(`[FILE] chunk received: ${state.chunks.length}/${totalExpectedChunks}`)
+                  console.log(`[FILE] received bytes: ${state.received}/${state.size ?? '?'}`)
+
+                  const elapsed = (Date.now() - state.startTime) / 1000
+                  state.speed = elapsed > 0 ? state.received / elapsed : 0
+
+                  const RECEIVER_PROGRESS_UPDATE_BYTES = 1024 * 1024
+                  const lastUpdate = state.lastProgressUpdate || 0
+                  if (state.received - lastUpdate >= RECEIVER_PROGRESS_UPDATE_BYTES || (state.size != null && state.received >= state.size) || state.complete) {
+                    state.lastProgressUpdate = state.received
+                    setReceiving({ ...state })
+                  }
+
+                  if (state.size != null && state.received >= state.size && state.complete) {
+                    console.log('[FILE] all chunks received')
+                    finalizeTransfer()
+                  }
+                }
               })
 
               peer.on('error', (err) => {
                 const errCode = err?.code || err?.name || 'unknown'
-                if (import.meta.env.DEV) console.error('[file-recv] peer error:', errCode)
+                console.warn('[WEBRTC] peer error (receiver):', errCode)
                 if (receiverCompleted) return
                 clearReceiverConnectTimeout()
                 delete pendingIceCandidatesRef.current[from]
@@ -1273,7 +1318,7 @@ export default function App() {
 
               peer.on('close', () => {
                 if (receiverPeerRef.current !== peer) return
-                if (import.meta.env.DEV) console.log('[file-recv] peer closed')
+                console.log('[WEBRTC] peer closed (receiver)')
                 delete pendingIceCandidatesRef.current[from]
                 if (recvStateRef.current) {
                   setError('Transfer terputus. Berkas mungkin tidak lengkap.')
@@ -1374,22 +1419,21 @@ export default function App() {
         }
       }
 
-      ws.onclose = () => {
-        handleSocketClosed(ws)
+      ws.onclose = (event) => {
+        console.log('[WS] close code:', event?.code, 'reason:', event?.reason || 'none')
+        handleSocketClosed(ws, event)
       }
 
-      ws.onerror = () => {
-        if (import.meta.env.DEV) console.error('[ws] error')
-        handleSocketClosed(ws)
+      ws.onerror = (err) => {
+        console.warn('[WS] error:', err?.message || 'WebSocket encountered an error')
       }
     }
 
-    let chain = Promise.resolve()
-    let receiverCompleted = false
     const finalizeTransfer = async () => {
       const state = recvStateRef.current
       if (!state || state.finalized) return
       state.finalized = true
+      console.log('[FILE] finalize started')
       if (import.meta.env.DEV) console.log('[file-recv] finalizing, total:', state.received, 'expected:', state.size)
 
       if (state.size != null && state.received !== state.size) {
@@ -1402,6 +1446,7 @@ export default function App() {
 
       const blob = new Blob(state.chunks, { type: state.mime })
       state.chunks = []
+      console.log('[FILE] blob created')
       const receivedChecksum = await sha256Hex(blob)
       if (import.meta.env.DEV) console.log('[file-recv] checksum match:', state.checksum ? receivedChecksum === state.checksum : 'no checksum')
       if (state.checksum && receivedChecksum !== state.checksum) {
@@ -1410,6 +1455,7 @@ export default function App() {
         setReceiving(null)
         return
       }
+      console.log('[FILE] checksum verified')
 
       try {
         const savedRecord = await saveReceivedFile({
@@ -1425,6 +1471,18 @@ export default function App() {
         })
         await loadReceivedFilesRef.current()
         setShowDownloadPanel(true)
+        console.log('[FILE] file saved')
+
+        // Send ACK back to sender over DataChannel before cleanup
+        if (receiverPeerRef.current && !receiverPeerRef.current.destroyed) {
+          try {
+            receiverPeerRef.current.send(JSON.stringify({ type: 'file-ack' }))
+            console.log('[FILE] ACK sent')
+          } catch { /* ignore */ }
+        }
+
+        console.log('[FILE] finalize completed')
+        console.log('[FILE] transfer completed')
         setNotify({ type: 'info', message: `Berkas "${state.name}" diterima. Tersimpan di notifikasi.` })
         setHistory(h => [{ name: state.name, size: state.size, peer: state.fromName, time: Date.now(), type: 'received' }, ...h].slice(0, 20))
         audioRef.current.play().catch(() => {})
@@ -1439,21 +1497,44 @@ export default function App() {
       }
 
       setReceiving(null)
-      if (receiverPeerRef.current) {
-        receiverPeerRef.current.destroy()
-        receiverPeerRef.current = null
-        receiverPeerSourceRef.current = null
-      }
-      const finalSenderId = state.fromId
-      if (finalSenderId) delete pendingIceCandidatesRef.current[finalSenderId]
-      recvStateRef.current = null
+      setTimeout(() => {
+        if (receiverPeerRef.current) {
+          receiverPeerRef.current.destroy()
+          receiverPeerRef.current = null
+          receiverPeerSourceRef.current = null
+        }
+        const finalSenderId = state.fromId
+        if (finalSenderId) delete pendingIceCandidatesRef.current[finalSenderId]
+        recvStateRef.current = null
+      }, 1000)
     }
+
+    const handleOnline = () => {
+      if (shouldReconnectRef.current && (!socketRef.current || socketRef.current.readyState === WebSocket.CLOSED)) {
+        console.log('[WS] online event detected, reconnecting immediately')
+        reconnectAttemptRef.current = 0
+        connect()
+      }
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && shouldReconnectRef.current && (!socketRef.current || socketRef.current.readyState === WebSocket.CLOSED)) {
+        console.log('[WS] tab became visible, checking connection')
+        connect()
+      }
+    }
+
+    window.addEventListener('online', handleOnline)
+    document.addEventListener('visibilitychange', handleVisibility)
 
     shouldReconnectRef.current = true
     connect()
 
     return () => {
       shouldReconnectRef.current = false
+
+      window.removeEventListener('online', handleOnline)
+      document.removeEventListener('visibilitychange', handleVisibility)
 
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
@@ -1521,6 +1602,7 @@ export default function App() {
     }
     forceLogoutReceivedRef.current = false
     shouldReconnectRef.current = true
+    nameRef.current = name.trim()
     sessionStorage.setItem('kirimin_username', name.trim())
     sessionStorage.setItem('kirimin_authenticated', 'true')
     setJoined(true)
@@ -1544,20 +1626,11 @@ export default function App() {
     }
 
     let settled = false
-    let bpTimer = null
-
-    const clearBpTimer = () => {
-      if (bpTimer) {
-        clearTimeout(bpTimer)
-        bpTimer = null
-      }
-    }
 
     transferCancelRefs.current[fileId] = () => {
       if (settled) return
       settled = true
       clearConnectTimeout()
-      clearBpTimer()
       clearDisconnectTimer()
       clearRetryTimer()
       if (senderPeerRef.current) {
@@ -1612,7 +1685,6 @@ export default function App() {
 
     const cleanupPeer = (peer) => {
       clearConnectTimeout()
-      clearBpTimer()
       clearDisconnectTimer()
       clearRetryTimer()
       if (senderPeerRef.current === peer) {
@@ -1627,7 +1699,6 @@ export default function App() {
       if (settled) return
       settled = true
       clearConnectTimeout()
-      clearBpTimer()
       clearDisconnectTimer()
       clearRetryTimer()
       if (activePeer) cleanupPeer(activePeer)
@@ -1702,12 +1773,17 @@ export default function App() {
       }
       isRetrying = false
       if (import.meta.env.DEV) console.log(`[WebRTC] attempt ${retryCount + 1}/${MAX_PEER_RETRIES + 1} for file ${file.name}`)
+      console.log('[FILE] preparing transfer')
+      console.log('[FILE] target:', recipient.name || recipient.id)
       
       const peer = new Peer(getPeerConfig(true))
       activePeer = peer
       senderPeerRef.current = peer
       senderPeerTargetRef.current = recipient.id
       
+      console.log('[FILE] peer connection created')
+      console.log('[FILE] data channel created')
+      console.log('[FILE] data channel state:', peer._channel?.readyState || 'connecting')
       if (import.meta.env.DEV) console.log('[file-send] peer created, attaching diagnostics')
       attachIceDiagnostics(peer, 'sender')
       
@@ -1763,9 +1839,13 @@ export default function App() {
 
       peer.on('signal', (signal) => {
         if (senderPeerRef.current !== peer || peer.destroyed) return
-        if (import.meta.env.DEV) console.log('[peer] offering, type:', signal?.type)
         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-          socketRef.current.send(JSON.stringify({ type: signal.type === 'candidate' ? 'ice-candidate' : (signal.type || 'ice-candidate'), target: recipient.id, data: signal }))
+          const type = signal.type === 'candidate' ? 'ice-candidate' : (signal.type || 'ice-candidate')
+          console.log(`[WEBRTC] signal sent: ${type} to ${recipient.name || recipient.id}`)
+          if (type === 'ice-candidate') {
+            console.log(`[ICE] candidate sent: to ${recipient.name || recipient.id}`)
+          }
+          socketRef.current.send(JSON.stringify({ type, target: recipient.id, data: signal }))
         }
       })
 
@@ -1773,6 +1853,7 @@ export default function App() {
         if (senderPeerRef.current !== peer || peer.destroyed || settled) return
         connected = true
         clearConnectTimeout()
+        console.log('[FILE] data channel OPEN')
         if (import.meta.env.DEV) console.log('[file-send] peer connected, starting transfer...')
         setSendingFiles(prev => prev.map(f =>
           f.id === fileId ? { ...f, connected: true, status: 'sending' } : f
@@ -1784,6 +1865,7 @@ export default function App() {
           if (import.meta.env.DEV) console.log('[file-send] checksum ready, sending meta...')
           const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum, senderName: nameRef.current, senderId: socketIdRef.current })
           peer.send(meta)
+          console.log('[FILE] metadata sent')
           transferStarted = true
           if (import.meta.env.DEV) console.log('[file-send] meta sent, starting chunk loop...')
 
@@ -1792,73 +1874,153 @@ export default function App() {
           await new Promise(r => setTimeout(r, 100))
 
           const chunkSize = 16 * 1024
-          const maxBufferedAmount = 256 * 1024
+          const maxBufferedAmount = 64 * 1024
+          const totalChunks = Math.ceil(file.size / chunkSize) || 1
           const PROGRESS_UPDATE_BYTES = 1024 * 1024
           let offset = 0
           let chunkCount = 0
           let lastProgressUpdate = 0
           const startTime = Date.now()
 
-          const send = async () => {
-            if (senderPeerRef.current !== peer || settled) return
-            if (!peer.connected) {
-              if (import.meta.env.DEV) console.log('[file-send] peer disconnected during transfer')
-              finish(false)
-              return
+          peer.on('data', (data) => {
+            if (typeof data === 'string') {
+              try {
+                const msg = JSON.parse(data)
+                if (msg.type === 'file-ack') {
+                  console.log('[FILE] receiver ACK received, transfer finalized successfully')
+                  finish(true)
+                }
+              } catch { /* ignore */ }
+            }
+          })
+
+          const sendLoop = async () => {
+            const channel = peer._channel
+            if (channel && typeof channel.bufferedAmountLowThreshold === 'number') {
+              channel.bufferedAmountLowThreshold = maxBufferedAmount
             }
 
-            const bufferedAmount = peer.bufferSize
-            if (bufferedAmount > maxBufferedAmount) {
-              if (bpTimer) {
+            const waitForDrain = () => new Promise((resolve) => {
+              if (!peer || peer.destroyed || !peer.connected) {
+                resolve()
                 return
               }
-              bpTimer = setTimeout(() => {
-                bpTimer = null
-                send()
+              const currentChannel = peer._channel
+              const currentBuf = (currentChannel && currentChannel.bufferedAmount) ?? peer.bufferSize ?? 0
+              if (currentBuf <= maxBufferedAmount) {
+                resolve()
+                return
+              }
+
+              console.log(`[FILE] buffered amount: ${currentBuf}`)
+              console.log('[FILE] flow control paused')
+
+              let resolved = false
+              let pollTimer = null
+
+              const onLow = () => {
+                if (resolved) return
+                resolved = true
+                if (currentChannel) currentChannel.removeEventListener('bufferedamountlow', onLow)
+                if (pollTimer) clearInterval(pollTimer)
+                console.log('[FILE] flow control resumed')
+                resolve()
+              }
+
+              if (currentChannel) {
+                currentChannel.addEventListener('bufferedamountlow', onLow, { once: true })
+              }
+
+              pollTimer = setInterval(() => {
+                if (!peer || peer.destroyed || !peer.connected) {
+                  if (pollTimer) clearInterval(pollTimer)
+                  if (currentChannel) currentChannel.removeEventListener('bufferedamountlow', onLow)
+                  resolve()
+                  return
+                }
+                const buf = (currentChannel && currentChannel.bufferedAmount) ?? peer.bufferSize ?? 0
+                if (buf <= maxBufferedAmount) {
+                  onLow()
+                }
               }, 20)
-              return
+            })
+
+            while (offset < file.size) {
+              if (senderPeerRef.current !== peer || settled) return
+              if (!peer.connected) {
+                if (import.meta.env.DEV) console.log('[file-send] peer disconnected during transfer')
+                finish(false)
+                return
+              }
+
+              await waitForDrain()
+              if (senderPeerRef.current !== peer || settled || !peer.connected) return
+
+              const chunk = file.slice(offset, offset + chunkSize)
+              const buffer = await chunk.arrayBuffer()
+              if (senderPeerRef.current !== peer || settled || !peer.connected) return
+
+              peer.send(buffer)
+              offset += buffer.byteLength
+              chunkCount += 1
+
+              console.log(`[FILE] chunk sent: ${chunkCount}/${totalChunks}`)
+              console.log(`[FILE] buffered amount: ${peer.bufferSize}`)
+
+              if (chunkCount === 1 && import.meta.env.DEV) console.log('[file-send] first chunk sent:', buffer.byteLength, 'bytes')
+              if (chunkCount % 50 === 0 || offset >= file.size) {
+                if (import.meta.env.DEV) console.log('[file-send] progress:', offset, '/', file.size)
+              }
+
+              if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
+                const elapsed = (Date.now() - startTime) / 1000
+                const speed = elapsed > 0 ? offset / elapsed : 0
+                setSendingFiles(prev => prev.map(f =>
+                  f.id === fileId ? { ...f, sent: offset, speed } : f
+                ))
+                lastProgressUpdate = offset
+              }
             }
 
-            const chunk = file.slice(offset, offset + chunkSize)
-            const buffer = await chunk.arrayBuffer()
-            if (senderPeerRef.current !== peer || settled) return
-            if (!peer.connected) {
-              if (import.meta.env.DEV) console.log('[file-send] peer disconnected after read')
-              finish(false)
-              return
-            }
+            console.log('[FILE] all chunks queued')
 
-            peer.send(buffer)
-            offset += buffer.byteLength
-            chunkCount += 1
+            // All chunks queued, wait for buffer to completely drain to 0 before sending file-end
+            const waitForZeroDrain = () => new Promise((resolve) => {
+              const check = () => {
+                if (senderPeerRef.current !== peer || settled || !peer.connected) {
+                  resolve()
+                  return
+                }
+                const currentBuf = (peer._channel && peer._channel.bufferedAmount) ?? peer.bufferSize ?? 0
+                if (currentBuf === 0) {
+                  resolve()
+                } else {
+                  setTimeout(check, 25)
+                }
+              }
+              check()
+            })
 
-            if (chunkCount === 1 && import.meta.env.DEV) console.log('[file-send] first chunk sent:', buffer.byteLength, 'bytes')
-            if (chunkCount % 50 === 0 || offset >= file.size) {
-              if (import.meta.env.DEV) console.log('[file-send] progress:', offset, '/', file.size)
-            }
+            await waitForZeroDrain()
+            if (senderPeerRef.current !== peer || settled || !peer.connected) return
 
-            if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
-              const elapsed = (Date.now() - startTime) / 1000
-              const speed = elapsed > 0 ? offset / elapsed : 0
-              setSendingFiles(prev => prev.map(f =>
-                f.id === fileId ? { ...f, sent: offset, speed } : f
-              ))
-              lastProgressUpdate = offset
-            }
-
-            if (offset < file.size) {
-              setTimeout(send, 0)
-              return
-            }
-
-            if (import.meta.env.DEV) console.log('[file-send] all chunks sent, sending file-end')
+            console.log('[FILE] buffer drained')
+            console.log('[FILE] file-end sent')
             peer.send(JSON.stringify({ type: 'file-end' }))
             transferDone = true
+
             setHistory(h => [{ name: file.name, size: file.size, peer: recipient.name, time: Date.now(), type: 'sent' }, ...h].slice(0, 20))
             setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim ke ${recipient.name}` })
-            setTimeout(() => finish(true), 2000)
+
+            setTimeout(() => {
+              if (!settled) {
+                console.log('[FILE] transfer completed (fallback timeout)')
+                finish(true)
+              }
+            }, 10000)
           }
-          send()
+
+          await sendLoop()
         } catch (err) {
           if (import.meta.env.DEV) console.error('[send] error:', err)
           setError('Gagal mengirim berkas.')
@@ -1867,17 +2029,13 @@ export default function App() {
       })
 
       peer.on('error', (err) => {
-        if (import.meta.env.DEV) console.log(`[peer] error event: ${err?.code || err?.name || 'unknown'}`)
-        if (import.meta.env.DEV) console.log(`[peer] error guards: peerMatch=${senderPeerRef.current === peer} settled=${settled} transferDone=${transferDone}`)
+        console.warn('[WEBRTC] peer error (sender):', err?.code || err?.name || 'unknown')
         
         if (senderPeerRef.current !== peer || settled || transferDone) {
-          if (import.meta.env.DEV) console.log('[peer] error handler blocked by guards')
           return
         }
         
-        if (import.meta.env.DEV) console.error('[peer] sender error:', err?.code || err?.name || 'unknown')
         if (!connected && !transferStarted) {
-          if (import.meta.env.DEV) console.log('[peer] error calling failBeforeConnect')
           failBeforeConnect(peer, 'error')
           return
         }
@@ -1886,17 +2044,13 @@ export default function App() {
       })
 
       peer.on('close', () => {
-        if (import.meta.env.DEV) console.log('[peer] close event')
-        if (import.meta.env.DEV) console.log(`[peer] close guards: peerMatch=${senderPeerRef.current === peer} settled=${settled} transferDone=${transferDone}`)
+        console.log('[WEBRTC] peer closed (sender)')
         
         if (senderPeerRef.current !== peer || settled || transferDone) {
-          if (import.meta.env.DEV) console.log('[peer] close handler blocked by guards')
           return
         }
         
-        if (import.meta.env.DEV) console.log('[peer] sender closed')
         if (!connected && !transferStarted) {
-          if (import.meta.env.DEV) console.log('[peer] close calling failBeforeConnect')
           failBeforeConnect(peer, 'close')
           return
         }
