@@ -1865,11 +1865,11 @@ export default function App() {
 
           // await new Promise(r => setTimeout(r, 100))
 
-          const chunkSize = 256 * 1024
-          const maxBufferedAmount = 16 * 1024 * 1024
-          const lowThreshold = 4 * 1024 * 1024
+          const chunkSize = 512 * 1024
+          const maxBufferedAmount = 32 * 1024 * 1024
+          const lowThreshold = 8 * 1024 * 1024
           const totalChunks = Math.ceil(file.size / chunkSize) || 1
-          const PROGRESS_UPDATE_BYTES = 512 * 1024
+          const PROGRESS_UPDATE_BYTES = 1024 * 1024
           let offset = 0
           let chunkCount = 0
           let lastProgressUpdate = 0
@@ -1904,44 +1904,17 @@ export default function App() {
                 resolve()
                 return
               }
-
-              console.log(`[FILE] buffered amount: ${currentBuf}`)
-              console.log('[FILE] flow control paused')
-
-              let resolved = false
-              let pollTimer = null
-
-              const onLow = () => {
-                if (resolved) return
-                resolved = true
-                if (activeChan) activeChan.removeEventListener('bufferedamountlow', onLow)
-                if (pollTimer) clearInterval(pollTimer)
-                console.log('[FILE] flow control resumed')
-                resolve()
-              }
-
+              const onLow = () => resolve()
               if (activeChan) {
                 activeChan.addEventListener('bufferedamountlow', onLow, { once: true })
+              } else {
+                resolve()
               }
-
-              pollTimer = setInterval(() => {
-                if (!peer || peer.destroyed || !peer.connected) {
-                  if (pollTimer) clearInterval(pollTimer)
-                  if (activeChan) activeChan.removeEventListener('bufferedamountlow', onLow)
-                  resolve()
-                  return
-                }
-                const buf = (activeChan && activeChan.bufferedAmount) ?? peer.bufferSize ?? 0
-                if (buf <= lowThreshold) {
-                  onLow()
-                }
-              }, 5)
             })
 
             while (offset < file.size) {
               if (senderPeerRef.current !== peer || settled) return
               if (!peer.connected && peer._channel?.readyState !== 'open') {
-                if (import.meta.env.DEV) console.log('[file-send] peer disconnected during transfer')
                 finish(false)
                 return
               }
@@ -1949,17 +1922,17 @@ export default function App() {
               await waitForDrain()
               if (senderPeerRef.current !== peer || settled) return
 
-              const chunk = file.slice(offset, offset + chunkSize)
-              const buffer = await chunk.arrayBuffer()
-              if (senderPeerRef.current !== peer || settled) return
+              // Kirim beberapa chunk sekaligus (pipelining) untuk mengisi buffer
+              const batchSize = 4
+              for (let i = 0; i < batchSize && offset < file.size; i++) {
+                const chunk = file.slice(offset, offset + chunkSize)
+                peer.send(chunk) // Kirim Blob langsung (no ArrayBuffer copy)
+                offset += chunk.size
+                chunkCount += 1
 
-              peer.send(buffer)
-              offset += buffer.byteLength
-              chunkCount += 1
-
-              if (chunkCount === 1 || chunkCount % 25 === 0 || offset >= file.size) {
-                console.log(`[FILE] chunk sent: ${chunkCount}/${totalChunks}`)
-                console.log(`[FILE] buffered amount: ${(peer._channel && peer._channel.bufferedAmount) ?? peer.bufferSize}`)
+                if (chunkCount % 50 === 0 || offset >= file.size) {
+                  console.log(`[FILE] progress: ${Math.round((offset / file.size) * 100)}% (${chunkCount}/${totalChunks})`)
+                }
               }
 
               if (offset - lastProgressUpdate >= PROGRESS_UPDATE_BYTES || offset >= file.size) {
@@ -1972,29 +1945,20 @@ export default function App() {
               }
             }
 
-            console.log('[FILE] all chunks queued')
-
-            const waitForZeroDrain = () => new Promise((resolve) => {
+            // Tunggu buffer benar-benar kosong sebelum mengirim file-end
+            const finalDrain = () => new Promise((resolve) => {
               const check = () => {
-                if (senderPeerRef.current !== peer || settled) {
-                  resolve()
-                  return
-                }
-                const currentBuf = (peer._channel && peer._channel.bufferedAmount) ?? peer.bufferSize ?? 0
-                if (currentBuf === 0) {
-                  resolve()
-                } else {
-                  setTimeout(check, 15)
-                }
+                const buf = (peer._channel && peer._channel.bufferedAmount) ?? peer.bufferSize ?? 0
+                if (buf === 0 || peer.destroyed) resolve()
+                else setTimeout(check, 10)
               }
               check()
             })
 
-            await waitForZeroDrain()
+            await finalDrain()
             if (senderPeerRef.current !== peer || settled) return
 
-            console.log('[FILE] buffer drained')
-            console.log('[FILE] file-end sent')
+            console.log('[FILE] transfer done, sending end signal')
             peer.send(JSON.stringify({ type: 'file-end' }))
             transferDone = true
 
@@ -2002,10 +1966,7 @@ export default function App() {
             setNotify({ type: 'success', message: `Berkas "${file.name}" terkirim ke ${recipient.name}` })
 
             setTimeout(() => {
-              if (!settled) {
-                console.log('[FILE] transfer completed (fallback timeout)')
-                finish(true)
-              }
+              if (!settled) finish(true)
             }, 10000)
           }
 
