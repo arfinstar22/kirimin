@@ -40,7 +40,7 @@ const DEFAULT_STUN_SERVERS = [
 
 const MAX_PEER_RETRIES = 2
 const PEER_CONNECT_TIMEOUT = 25000
-const WS_CHUNK_SIZE = 32 * 1024
+const WS_CHUNK_SIZE = 256 * 1024
 const WS_TRANSFER_TIMEOUT = 180000
 
 async function logIceStats(peer, label) {
@@ -422,19 +422,8 @@ export default function App() {
       return
     }
 
-    if (import.meta.env.DEV) console.log('[ws-transfer] size verified, computing checksum...')
-    const blob = new Blob(session.chunks)
-    const receivedChecksum = await sha256Hex(blob)
-
-    if (session.checksum && receivedChecksum !== session.checksum) {
-      if (import.meta.env.DEV) console.error('[ws-transfer] checksum mismatch')
-      setError('Berkas rusak saat transfer via relay. Checksum tidak cocok.')
-      setReceiving(null)
-      wsTransferSessionsRef.current.delete(sessionId)
-      return
-    }
-
-    if (import.meta.env.DEV) console.log('[ws-transfer] checksum verified, saving file...')
+    // const receivedChecksum = await sha256Hex(blob) // skip for speed
+    if (import.meta.env.DEV) console.log('[ws-transfer] checksum skipped for speed, saving file...')
     try {
       const fromUser = usersRef.current.find(u => u.id === session.from)?.name || 'Seseorang'
       const savedRecord = await saveReceivedFile({
@@ -530,7 +519,7 @@ export default function App() {
 
     if (import.meta.env.DEV) console.log('[ws-transfer] starting via WebSocket relay:', file.name, 'sessionId:', sessionId)
 
-    const checksum = await sha256Hex(file)
+    const checksum = null // skip hash for speed
 
     wsTransferSessionsRef.current.set(sessionId, {
       type: 'send',
@@ -612,9 +601,9 @@ export default function App() {
       }
 
       // Backpressure: wait if WebSocket buffer is high
-      const maxWsBuffered = 256 * 1024
+      const maxWsBuffered = 4 * 1024 * 1024
       while (currentSocket.bufferedAmount > maxWsBuffered) {
-        await new Promise(r => setTimeout(r, 20))
+        await new Promise(r => setTimeout(r, 5))
       }
 
       const chunk = file.slice(offset, offset + chunkSize)
@@ -1480,15 +1469,9 @@ export default function App() {
       const blob = new Blob(state.chunks, { type: state.mime })
       state.chunks = []
       console.log('[FILE] blob created')
-      const receivedChecksum = await sha256Hex(blob)
-      if (import.meta.env.DEV) console.log('[file-recv] checksum match:', state.checksum ? receivedChecksum === state.checksum : 'no checksum')
-      if (state.checksum && receivedChecksum !== state.checksum) {
-        setError('Berkas rusak saat transfer. Checksum SHA-256 tidak cocok.')
-        recvStateRef.current = null
-        setReceiving(null)
-        return
-      }
-      console.log('[FILE] checksum verified')
+      // const receivedChecksum = await sha256Hex(blob) // skip checksum for speed
+      if (import.meta.env.DEV) console.log('[file-recv] checksum skipped for speed')
+      if (state.checksum) console.log('[file-recv] checksum ignored for speed')
 
       try {
         const savedRecord = await saveReceivedFile({
@@ -1869,9 +1852,9 @@ export default function App() {
         ))
 
         try {
-          if (import.meta.env.DEV) console.log('[file-send] computing checksum for:', file.name, file.size, 'bytes')
-          const checksum = await sha256Hex(file)
-          if (import.meta.env.DEV) console.log('[file-send] checksum ready, sending meta...')
+          // const checksum = await sha256Hex(file)
+          const checksum = null // skip hash for speed
+          if (import.meta.env.DEV) console.log('[file-send] checksum skipped for speed, sending meta...')
           const meta = JSON.stringify({ type: 'file-meta', name: file.name, size: file.size, mime: file.type, checksum, senderName: nameRef.current, senderId: socketIdRef.current })
           peer.send(meta)
           console.log('[FILE] metadata sent')
@@ -1880,11 +1863,11 @@ export default function App() {
 
           addSystemMessage(recipient.id, 'sent', file.name, file.size)
 
-          await new Promise(r => setTimeout(r, 100))
+          // await new Promise(r => setTimeout(r, 100))
 
-          const chunkSize = 64 * 1024
-          const maxBufferedAmount = 1024 * 1024
-          const lowThreshold = 256 * 1024
+          const chunkSize = 256 * 1024
+          const maxBufferedAmount = 16 * 1024 * 1024
+          const lowThreshold = 4 * 1024 * 1024
           const totalChunks = Math.ceil(file.size / chunkSize) || 1
           const PROGRESS_UPDATE_BYTES = 512 * 1024
           let offset = 0
@@ -1952,7 +1935,7 @@ export default function App() {
                 if (buf <= lowThreshold) {
                   onLow()
                 }
-              }, 10)
+              }, 5)
             })
 
             while (offset < file.size) {
